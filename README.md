@@ -9,8 +9,6 @@ machines: nothing switches stacks.
 - **Files:** positional reads, writes, and sync on the worker pool
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
-Tested on x86_64 Linux. macOS and Windows builds link but have not been run yet.
-
 ## Usage
 
 ```sh

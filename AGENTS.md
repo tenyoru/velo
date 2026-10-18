@@ -12,14 +12,11 @@ stackful fibers), so coroutines here are explicit state machines.
 - Zig 0.17.0 (`minimum_zig_version` in `build.zig.zon`)
 - I/O backends: Linux io_uring with epoll fallback, macOS kqueue, Windows IOCP
   (64-bit Windows only)
-- Runtime-tested on x86_64-linux; macOS/Windows x86_64 and aarch64 are cross-linked,
-  not runtime-verified. The Nix shell currently targets x86_64-linux.
+- The Nix shell targets x86_64-linux.
 - `nix develop` provides `zig_0_17` (nixos-unstable), `zls` (zigtools/zls flake input,
   because nixpkgs has no `zls_0_17` yet) and `just`
 - Run recipes and the editor inside `nix develop`; the global zls is 0.16 and does not
   match Zig 0.17
-- No runtime dependencies. GitHub Actions configures native Linux/macOS/Windows tests;
-  hosted results remain unverified until the workflow is pushed and run.
 
 ## Commands
 
