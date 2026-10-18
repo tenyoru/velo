@@ -9,6 +9,31 @@ machines: nothing switches stacks.
 - **Files:** positional reads, writes, and sync on the worker pool
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph loop["Loop (owning thread)"]
+        executor["Executor"] -->|poll| frames["Coroutine frames"]
+        frames -->|submit I/O| backend["I/O backend"]
+        backend -->|wake| executor
+        control["Control"] -->|wake tasks| executor
+    end
+
+    frames -->|blocking work| workers["WorkerPool"]
+    workers -->|completion post| control
+    threads["Other threads"] -->|post| control
+```
+
+- `Frame(C)` holds a coroutine's state, task handle, and result. Its coroutine
+  returns `.pending` to yield or `.ready` to finish; `Task.wake()` schedules another poll.
+- `Loop` drives the executor and socket/timer operations through the selected backend.
+  I/O completions wake waiting tasks.
+- `Control` runs posted callbacks on the loop thread. `WorkerPool` executes blocking
+  actions on worker threads and posts completions back to that loop.
+- The executor also works without I/O. Independent loops can run on separate threads,
+  each owning its tasks and communicating through posts.
+
 ## Usage
 
 ```sh
