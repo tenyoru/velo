@@ -1,0 +1,70 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1791956154,
+        "narHash": "sha256-jBYGPi4udQ9uo4KQp9m2J0546nJVQitG15gvZSaVVAs=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "55bfb4d7437bd4e09ab7cba58a43bd68eb310044",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "zls": "zls"
+      }
+    },
+    "zig-flake": {
+      "inputs": {
+        "nixpkgs": [
+          "zls",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790985140,
+        "narHash": "sha256-2soIfrlRmeSvZuHRNFojArInqEZRkPrzqiA3VEMla04=",
+        "owner": "silversquirl",
+        "repo": "zig-flake",
+        "rev": "392d312ade846f29ba8cf3fe3e82cc56cb40d11e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "silversquirl",
+        "repo": "zig-flake",
+        "type": "github"
+      }
+    },
+    "zls": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "zig-flake": "zig-flake"
+      },
+      "locked": {
+        "lastModified": 1792095809,
+        "narHash": "sha256-3Jk4Vv24VAI/4sCTqVH4lela91ywlvcxmu7B0CEzxfc=",
+        "owner": "zigtools",
+        "repo": "zls",
+        "rev": "ff89747f9ee66ad1c255f555d14a7a423019b59a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "zigtools",
+        "repo": "zls",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
