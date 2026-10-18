@@ -132,6 +132,8 @@ fn socketOf(op: *io.Operation) usize {
 }
 
 pub const Loop = struct {
+    pub const Options = io.LoopOptions;
+
     port: w.HANDLE,
     executor: co.Executor = .{},
     control: Control = .{ .signal = signalLoop },
@@ -168,8 +170,8 @@ pub const Loop = struct {
         loop.control.shutdown();
     }
 
-    pub fn init(entries: u16) !Loop {
-        if (entries == 0) return error.InvalidArgument;
+    pub fn init(options: Options) !Loop {
+        if (options.entries == 0) return error.InvalidArgument;
 
         var data: w.WSAData = undefined;
         if (w.WSAStartup(0x0202, &data) != 0) return error.WinsockStartupFailed;
@@ -676,7 +678,7 @@ test "iocp wake packets dispatch cross-thread posts only on the loop thread" {
         }
     };
 
-    var loop = try Loop.init(4);
+    var loop = try Loop.init(.{ .entries = 4 });
     defer loop.deinit();
 
     var probe: Probe = .{ .loop = &loop, .thread_id = std.Thread.getCurrentId() };
@@ -707,7 +709,7 @@ test "iocp queued datagrams preserve zero length and drain truncation packets" {
     const support = @import("../tests/support.zig");
 
     inline for (.{ io.AddressFamily.ipv4, io.AddressFamily.ipv6 }) |family| {
-        var loop = try Loop.init(4);
+        var loop = try Loop.init(.{ .entries = 4 });
         defer loop.deinit();
 
         const sender = try udpSocket(family);
@@ -779,7 +781,7 @@ test "iocp queued datagrams preserve zero length and drain truncation packets" {
 test "iocp write half-close preserves the reverse stream" {
     const support = @import("../tests/support.zig");
 
-    var loop = try Loop.init(4);
+    var loop = try Loop.init(.{ .entries = 4 });
     defer loop.deinit();
 
     const sockets = try support.pair(&loop, .ipv4);

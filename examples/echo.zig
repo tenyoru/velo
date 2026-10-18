@@ -132,7 +132,7 @@ fn close(fd: io.Socket) void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var loop = try io.Loop.init(32);
+    var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
     const listener = try io.tcpSocket(.ipv4);
@@ -190,7 +190,7 @@ pub fn main(init: std.process.Init) !void {
 
 test "handler cancellation consumes queued children before closing sockets" {
     inline for (.{ false, true }) |receiving| {
-        var loop = try io.Loop.init(8);
+        var loop = try io.Loop.init(.{ .entries = 8 });
         defer loop.deinit();
 
         const fd = try io.tcpSocket(.ipv4);

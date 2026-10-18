@@ -28,6 +28,10 @@ pub const backend = switch (builtin.os.tag) {
     else => @compileError("velo.io supports Linux, macOS, and Windows"),
 };
 pub const Loop = backend.Loop;
+pub const LoopOptions = struct {
+    /// io_uring submission capacity, not a task limit; Linux requires a power of two >= 2.
+    entries: u16 = 32,
+};
 
 pub const Control = @import("Control.zig");
 pub const WorkerPool = @import("WorkerPool.zig");

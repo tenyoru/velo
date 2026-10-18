@@ -8,6 +8,7 @@ const Epoll = @import("Epoll.zig");
 const Control = @import("../Control.zig");
 const ThreadGuard = @import("../../ThreadGuard.zig");
 const Loop = @This();
+pub const Options = @import("../root.zig").LoopOptions;
 
 ring: linux.IoUring = undefined,
 epoll: ?Epoll.State = null,
@@ -22,15 +23,16 @@ wake_fd: linux.fd_t = -1,
 wake_armed: bool = false,
 wake_received: bool = false,
 
-pub fn init(entries: u16) !Loop {
-    return initWithBackend(entries, .auto);
+pub fn init(options: Options) !Loop {
+    return initWithBackend(options, .auto);
 }
 
 /// `.auto` falls back to epoll only when io_uring is denied, or the kernel lacks it or
 /// an opcode the loop submits.
 pub const Backend = enum { auto, uring, epoll };
 
-pub fn initWithBackend(entries: u16, selected: Backend) !Loop {
+pub fn initWithBackend(options: Options, selected: Backend) !Loop {
+    const entries = options.entries;
     if (entries < 2) return error.RingTooSmall;
     if (!std.math.isPowerOfTwo(entries)) return error.EntriesNotPowerOfTwo;
 

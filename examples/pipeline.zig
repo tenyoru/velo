@@ -108,7 +108,7 @@ const Consumer = struct {
 };
 
 pub fn main() !void {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
     // Caller-owned storage bounds the queue; senders wait when it fills.
@@ -138,7 +138,7 @@ pub fn main() !void {
 
 test "pipeline joins both results and drains cancellation" {
     inline for (.{ false, true }) |canceled| {
-        var loop = try io.Loop.init(8);
+        var loop = try io.Loop.init(.{ .entries = 8 });
         defer loop.deinit();
 
         // Rendezvous leaves a granted send unconsumed after the first poll, testing cancel-and-drain.

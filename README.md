@@ -51,7 +51,7 @@ const std = @import("std");
 const velo = @import("velo");
 
 pub fn main() !void {
-    var loop = try velo.io.Loop.init(32);
+    var loop = try velo.io.Loop.init(.{});
     defer loop.deinit();
 
     var timer: velo.coroutines.Frame(velo.io.Timeout) = .{

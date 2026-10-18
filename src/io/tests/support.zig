@@ -8,12 +8,12 @@ const Mode = enum { auto, epoll };
 pub const modes = if (builtin.os.tag == .linux) [_]Mode{ .auto, .epoll } else [_]Mode{.auto};
 
 pub fn initLoop(entries: u16, mode: Mode) !io.Loop {
-    if (builtin.os.tag == .linux) return io.Loop.initWithBackend(entries, switch (mode) {
+    if (builtin.os.tag == .linux) return io.Loop.initWithBackend(.{ .entries = entries }, switch (mode) {
         .auto => .auto,
         .epoll => .epoll,
     });
 
-    return io.Loop.init(entries);
+    return io.Loop.init(.{ .entries = entries });
 }
 
 pub fn run(loop: *io.Loop) void {

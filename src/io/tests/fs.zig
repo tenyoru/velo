@@ -158,7 +158,7 @@ test "filesystem missing paths propagate errors and cancellation before open acq
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
     var pool: WorkerPool = undefined;
     try pool.init(testing.allocator, &loop, 1);
@@ -207,7 +207,7 @@ test "filesystem completed open wins cancellation and preserves caller owned han
     const original = try tmp.dir.createFile(testing.io, "existing", .{});
     original.close(testing.io);
 
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
     var pool: WorkerPool = undefined;
     try pool.init(testing.allocator, &loop, 1);

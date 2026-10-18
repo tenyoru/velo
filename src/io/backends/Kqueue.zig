@@ -116,6 +116,8 @@ pub fn closeSocket(fd: io.Socket) io.Error!void {
 }
 
 pub const Loop = struct {
+    pub const Options = io.LoopOptions;
+
     kqueue: c.fd_t,
     control: Control = .{ .signal = signalLoop },
     executor: co.Executor = .{},
@@ -124,8 +126,8 @@ pub const Loop = struct {
     running: bool = false,
     live: std.DoublyLinkedList = .{},
 
-    pub fn init(entries: u16) !Loop {
-        if (entries < 2) return error.RingTooSmall;
+    pub fn init(options: Options) !Loop {
+        if (options.entries < 2) return error.RingTooSmall;
 
         const fd = while (true) {
             const rc = c.kqueue();
@@ -649,7 +651,7 @@ test "kqueue wakes defer callbacks to control service" {
         }
     };
 
-    var loop = try Loop.init(2);
+    var loop = try Loop.init(.{ .entries = 2 });
     defer loop.deinit();
 
     var probe: Probe = .{ .loop = &loop };
@@ -668,7 +670,7 @@ test "kqueue wakes defer callbacks to control service" {
 }
 
 test "kqueue datagrams report truncation and accept empty messages" {
-    var loop = try Loop.init(2);
+    var loop = try Loop.init(.{ .entries = 2 });
     defer loop.deinit();
 
     const receiver = try udpSocket(.ipv4);

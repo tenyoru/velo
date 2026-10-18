@@ -21,7 +21,7 @@ const Counter = struct {
 };
 
 pub fn main() !void {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
     var counters = [_]co.Frame(Counter){

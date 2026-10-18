@@ -21,7 +21,7 @@ const Gated = struct {
 };
 
 test "worker pool rejects zero workers and joins unused workers" {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
     var pool: WorkerPool = undefined;
 
@@ -92,7 +92,7 @@ test "worker queued cancellation skips action and running cancellation retains r
 }
 
 test "worker task cancellation before submission never runs action" {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
     var pool: WorkerPool = undefined;
     try pool.init(testing.allocator, &loop, 1);
@@ -203,7 +203,7 @@ const Aligned = struct {
 };
 
 test "worker fixed concurrency drains many jobs with over-aligned actions and results" {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
     var pool: WorkerPool = undefined;
     try pool.init(testing.allocator, &loop, 2);

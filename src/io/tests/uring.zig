@@ -7,7 +7,7 @@ const testing = std.testing;
 const run = support.run;
 
 fn uring(entries: u16) !io.Loop {
-    return io.Loop.initWithBackend(entries, .uring) catch |err| switch (err) {
+    return io.Loop.initWithBackend(.{ .entries = entries }, .uring) catch |err| switch (err) {
         error.PermissionDenied, error.SystemOutdated => error.SkipZigTest,
         else => err,
     };
@@ -64,8 +64,8 @@ fn negative(e: linux.E) i32 {
 }
 
 test "io empty loop and minimum ring size" {
-    try testing.expectError(error.RingTooSmall, io.Loop.init(0));
-    try testing.expectError(error.RingTooSmall, io.Loop.init(1));
+    try testing.expectError(error.RingTooSmall, io.Loop.init(.{ .entries = 0 }));
+    try testing.expectError(error.RingTooSmall, io.Loop.init(.{ .entries = 1 }));
 
     var loop = try uring(2);
     defer loop.deinit();

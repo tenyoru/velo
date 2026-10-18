@@ -95,7 +95,7 @@ fn exercise(loop: *io.Loop, std_io: std.Io) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
     try exercise(&loop, init.io);
@@ -104,7 +104,10 @@ pub fn main(init: std.process.Init) !void {
 
 test "wakeup posts on the loop thread and resumes a stopped waiter" {
     inline for (if (builtin.os.tag == .linux) .{ false, true } else .{false}) |epoll| {
-        var loop = if (epoll) try io.Loop.initWithBackend(8, .epoll) else try io.Loop.init(8);
+        var loop = if (epoll)
+            try io.Loop.initWithBackend(.{ .entries = 8 }, .epoll)
+        else
+            try io.Loop.init(.{ .entries = 8 });
         defer loop.deinit();
 
         try exercise(&loop, std.testing.io);

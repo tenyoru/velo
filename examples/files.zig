@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn writeAndVerify(allocator: std.mem.Allocator, std_io: std.Io, path: []const u8) !usize {
-    var loop = try io.Loop.init(8);
+    var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
     // Blocking file calls run on workers; their completions wake the event loop.
