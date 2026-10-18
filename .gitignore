@@ -1,6 +1,7 @@
 *
 
 !/.gitignore
+!/.gitattributes
 !/AGENTS.md
 !/README.md
 !/justfile
