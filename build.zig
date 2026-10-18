@@ -1,0 +1,53 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const mod = b.addModule("velo", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    switch (target.result.os.tag) {
+        .macos => mod.link_libc = true,
+        .windows => {
+            mod.linkSystemLibrary("ws2_32", .{});
+            mod.linkSystemLibrary("kernel32", .{});
+        },
+        else => {},
+    }
+
+    const tests = b.addTest(.{ .root_module = mod });
+
+    const check_step = b.step("check", "Compile tests without running them");
+    check_step.dependOn(&tests.step);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    inline for (.{ "counters", "wakeup", "echo", "files", "pipeline" }) |name| {
+        const example = b.createModule(.{
+            .root_source_file = b.path("examples/" ++ name ++ ".zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "velo",
+                .module = mod,
+            }},
+        });
+
+        const exe = b.addExecutable(.{ .name = name, .root_module = example });
+        b.installArtifact(exe);
+
+        const run = b.addRunArtifact(exe);
+        run.addPassthruArgs();
+        b.step("run-" ++ name, "Run examples/" ++ name ++ ".zig").dependOn(&run.step);
+
+        const example_tests = b.addTest(.{ .name = name ++ "-test", .root_module = example });
+        check_step.dependOn(&exe.step);
+        check_step.dependOn(&example_tests.step);
+        test_step.dependOn(&b.addRunArtifact(example_tests).step);
+    }
+}

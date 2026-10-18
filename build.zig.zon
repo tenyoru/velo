@@ -1,0 +1,13 @@
+.{
+    .name = .velo,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.17.0",
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+
+    .fingerprint = 0x354971f5d53c61b4,
+}
