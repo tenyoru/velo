@@ -302,9 +302,14 @@ pub const Loop = struct {
             return;
         }
 
+        // Sockets carry no loop, so their first operation associates them. Windows allows
+        // one association per handle and rejects a repeat with ERROR_INVALID_PARAMETER.
         if (w.CreateIoCompletionPort(@ptrFromInt(fd), loop.port, 0, 0) == null) {
-            loop.finish(op, w.GetLastError(), 0);
-            return;
+            const code = w.GetLastError();
+            if (code != w.INVALID_PARAMETER) {
+                loop.finish(op, code, 0);
+                return;
+            }
         }
 
         const result = switch (op.data) {

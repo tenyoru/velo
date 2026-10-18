@@ -8,6 +8,7 @@ pub const IO_PENDING = 997;
 pub const OPERATION_ABORTED = 995;
 pub const WAIT_TIMEOUT = 258;
 pub const NOT_FOUND = 1168;
+pub const INVALID_PARAMETER = 87;
 
 pub const OVERLAPPED = extern struct {
     internal: usize = 0,
