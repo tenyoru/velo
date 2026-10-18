@@ -1,0 +1,58 @@
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Prefix avoids sharing a concurrency group with the release caller.
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    # Cold Zig builds compile the build runner first.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      # Version comes from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+      - run: zig fmt --check build.zig build.zig.zon src examples
+
+      - run: zig build test --summary all
+
+  release-safe-and-cross:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      # Version comes from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+      - run: zig build test -Doptimize=ReleaseSafe --summary all
+
+      - name: Link tests and examples for foreign targets
+        run: |
+          for target in x86_64-macos aarch64-macos x86_64-windows aarch64-windows aarch64-linux; do
+            zig build check -Dtarget="$target" --summary all
+          done
