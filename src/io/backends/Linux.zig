@@ -26,7 +26,8 @@ pub fn init(entries: u16) !Loop {
     return initWithBackend(entries, .auto);
 }
 
-/// `.auto` falls back to epoll only when io_uring is unsupported or denied.
+/// `.auto` falls back to epoll only when io_uring is denied, or the kernel lacks it or
+/// an opcode the loop submits.
 pub const Backend = enum { auto, uring, epoll };
 
 pub fn initWithBackend(entries: u16, selected: Backend) !Loop {
@@ -112,6 +113,21 @@ pub fn shutdown(loop: *Loop) void {
     loop.control.shutdown();
 }
 
+/// Every opcode the loop submits.
+const required_ops = [_]linux.IORING_OP{
+    .POLL_ADD,
+    .SENDMSG,
+    .RECVMSG,
+    .TIMEOUT,
+    .ACCEPT,
+    .ASYNC_CANCEL,
+    .LINK_TIMEOUT,
+    .CONNECT,
+    .CLOSE,
+    .SEND,
+    .RECV,
+};
+
 fn initUring(entries: u16) !Loop {
     var ring = try linux.IoUring.init(entries, 0);
     errdefer ring.deinit();
@@ -119,7 +135,22 @@ fn initUring(entries: u16) !Loop {
     // Live requests can exceed CQ capacity; limiting them can strand their dependencies.
     if (ring.features & linux.IORING_FEAT_NODROP == 0) return error.SystemOutdated;
 
+    // NODROP arrived in 5.5, SEND/RECV/CLOSE and the probe in 5.6; 5.5 rejects the probe.
+    const probe = ring.get_probe() catch |err| switch (err) {
+        error.ArgumentsInvalid => return error.SystemOutdated,
+        else => return err,
+    };
+    if (!supportsAll(probe)) return error.SystemOutdated;
+
     return .{ .ring = ring };
+}
+
+fn supportsAll(probe: linux.io_uring_probe) bool {
+    for (required_ops) |op| {
+        if (!probe.is_supported(op)) return false;
+    }
+
+    return true;
 }
 
 pub fn deinit(loop: *Loop) void {
@@ -293,4 +324,22 @@ fn completions(loop: *Loop, wait: u32) !void {
     }
 
     if (wake_failed) return error.WakePollFailed;
+}
+
+test "io_uring probe requires every submitted opcode" {
+    var probe = std.mem.zeroInit(linux.io_uring_probe, .{
+        .last_op = .RECV,
+        .ops_len = @backingInt(linux.IORING_OP.RECV) + 1,
+    });
+    for (required_ops) |op| probe.ops[@backingInt(op)].flags = linux.IO_URING_OP_SUPPORTED;
+
+    try std.testing.expect(supportsAll(probe));
+
+    // Like 5.5: CONNECT is the newest opcode, so SEND, RECV, and CLOSE are missing.
+    probe.last_op = .CONNECT;
+    try std.testing.expect(!supportsAll(probe));
+
+    probe.last_op = .RECV;
+    probe.ops[@backingInt(linux.IORING_OP.SEND)].flags = 0;
+    try std.testing.expect(!supportsAll(probe));
 }
