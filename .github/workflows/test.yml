@@ -3,7 +3,19 @@ name: Test
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.nix'
+      - 'flake.lock'
+      - 'justfile'
+      - '.gitignore'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.nix'
+      - 'flake.lock'
+      - 'justfile'
+      - '.gitignore'
   workflow_call:
 
 permissions:
