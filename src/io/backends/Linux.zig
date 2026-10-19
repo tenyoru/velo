@@ -6,7 +6,6 @@ const Executor = @import("../../coroutines/Executor.zig");
 const Uring = @import("Uring.zig");
 const Epoll = @import("Epoll.zig");
 const Control = @import("../Control.zig");
-const ThreadGuard = @import("../../ThreadGuard.zig");
 const Loop = @This();
 pub const Options = @import("../root.zig").LoopOptions;
 
@@ -95,25 +94,19 @@ pub fn drainWake(loop: *Loop) void {
     }
 }
 
-pub fn post(loop: *Loop, command: *Control.Post) void {
-    loop.control.post(command);
-}
-
-pub fn retain(loop: *Loop) void {
-    loop.control.retain();
-}
-
-pub fn release(loop: *Loop) void {
-    loop.control.release();
-}
-
-pub fn stop(loop: *Loop) void {
-    loop.control.stop();
-}
-
-pub fn shutdown(loop: *Loop) void {
-    loop.control.shutdown();
-}
+const shared = @import("../loop.zig").Shared(Loop, .{
+    .turn = turn,
+    .inflight = inflight,
+    .park = park,
+    .close = close,
+});
+pub const run = shared.run;
+pub const deinit = shared.deinit;
+pub const post = shared.post;
+pub const retain = shared.retain;
+pub const release = shared.release;
+pub const stop = shared.stop;
+pub const shutdown = shared.shutdown;
 
 /// Every opcode the loop submits.
 const required_ops = [_]linux.IORING_OP{
@@ -155,25 +148,14 @@ fn supportsAll(probe: linux.io_uring_probe) bool {
     return true;
 }
 
-pub fn deinit(loop: *Loop) void {
-    const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-    defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
-    assert(!loop.running);
-    loop.control.deinit();
-    assert(loop.executor.all_tasks.first == null);
-    assert(loop.active == 0 and loop.pending.first == null);
-    assert(loop.cancellations.first == null);
-    assert(loop.outstanding_cqes == 0 and loop.executor.ready.first == null);
+fn close(loop: *Loop) void {
+    assert(loop.cancellations.first == null and loop.outstanding_cqes == 0);
 
     if (loop.epoll) |*state| Epoll.deinit(state) else loop.ring.deinit();
     _ = linux.close(loop.wake_fd);
 }
 
 pub fn cancel(loop: *Loop, op: *Operation) void {
-    const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-    defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
     if (loop.epoll != null) return;
 
     assert(!op.native.cancel_pending and !op.native.cancel_submitted);
@@ -181,47 +163,32 @@ pub fn cancel(loop: *Loop, op: *Operation) void {
     loop.cancellations.append(&op.native.cancel_node);
 }
 
-pub fn run(loop: *Loop) !void {
-    // Keep guard address calculations out of normal builds.
-    const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-    defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
+fn turn(loop: *Loop) !bool {
+    if (loop.epoll) |*state| return Epoll.turn(loop, state);
 
-    assert(!loop.running);
-    loop.running = true;
-    defer loop.running = false;
+    loop.wake_received = false;
+    try loop.completions(0);
+    if (loop.wake_received) return true;
 
-    if (loop.epoll) |*state| return Epoll.run(loop, state);
-
-    while (true) {
-        if (loop.control.service(&loop.executor)) return;
-
-        loop.wake_received = false;
-        var budget: usize = 64;
-        while (budget > 0 and loop.executor.runOne()) : (budget -= 1) {}
-
+    loop.prepare();
+    if (try loop.submitPending()) {
         try loop.completions(0);
-        if (loop.wake_received) continue;
-
-        loop.prepare();
-        if (try loop.submitPending()) {
-            try loop.completions(0);
-            continue;
-        }
-
-        // Queued sends may be what allows already-submitted receives to complete.
-        if (loop.executor.ready.first != null or loop.pending.first != null or
-            loop.cancellations.first != null) continue;
-
-        if (loop.outstanding_cqes == 0 and !loop.control.hasWork()) {
-            if (!loop.control.idle(&loop.executor)) continue;
-            assert(loop.pending.first == null and loop.active == 0);
-            return;
-        }
-
-        // A full SQ can defer arming; never block where a post cannot wake us.
-        if (!loop.wake_armed) continue;
-        try loop.completions(1);
+        return true;
     }
+
+    return loop.cancellations.first != null;
+}
+
+fn inflight(loop: *const Loop) bool {
+    if (loop.epoll) |*state| return state.live.first != null;
+    return loop.outstanding_cqes > 0;
+}
+
+fn park(loop: *Loop) !void {
+    if (loop.epoll) |*state| return Epoll.park(loop, state);
+
+    // A full SQ can defer arming; never block where a post cannot wake us.
+    if (loop.wake_armed) try loop.completions(1);
 }
 
 fn submitPending(loop: *Loop) !bool {

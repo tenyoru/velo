@@ -6,7 +6,6 @@ const c = std.c;
 const io = @import("../root.zig");
 const Control = @import("../Control.zig");
 const co = @import("../../coroutines/root.zig");
-const ThreadGuard = @import("../../ThreadGuard.zig");
 const assert = std.debug.assert;
 
 pub const NativeError = c.E;
@@ -159,77 +158,45 @@ pub const Loop = struct {
         return .{ .kqueue = fd };
     }
 
-    pub fn deinit(loop: *Loop) void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
+    const shared = @import("../loop.zig").Shared(Loop, .{
+        .turn = turn,
+        .inflight = inflight,
+        .park = park,
+        .close = close,
+    });
+    pub const run = shared.run;
+    pub const deinit = shared.deinit;
+    pub const post = shared.post;
+    pub const retain = shared.retain;
+    pub const release = shared.release;
+    pub const stop = shared.stop;
+    pub const shutdown = shared.shutdown;
 
-        assert(!loop.running);
-        loop.control.deinit();
-        assert(loop.active == 0 and loop.pending.first == null);
-        assert(loop.live.first == null and loop.executor.ready.first == null);
-        assert(loop.executor.all_tasks.first == null);
-
+    fn close(loop: *Loop) void {
+        assert(loop.live.first == null);
         _ = c.close(loop.kqueue);
     }
 
-    pub fn post(loop: *Loop, command: *Control.Post) void {
-        loop.control.post(command);
+    fn turn(loop: *Loop) !bool {
+        loop.activate(nanoseconds(try now()));
+        loop.start();
+
+        const signaled = try loop.events(false);
+        try loop.cancelAndExpire(nanoseconds(try now()));
+
+        // A wake consumed above may be the only notification for an unserviced post.
+        return signaled;
     }
 
-    pub fn retain(loop: *Loop) void {
-        loop.control.retain();
+    fn inflight(loop: *const Loop) bool {
+        return loop.live.first != null;
     }
 
-    pub fn release(loop: *Loop) void {
-        loop.control.release();
-    }
-
-    pub fn stop(loop: *Loop) void {
-        loop.control.stop();
-    }
-
-    pub fn shutdown(loop: *Loop) void {
-        loop.control.shutdown();
-    }
-
-    pub fn run(loop: *Loop) !void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
-        assert(!loop.running);
-        loop.running = true;
-        defer loop.running = false;
-
-        while (true) {
-            if (loop.control.service(&loop.executor)) return;
-
-            var budget: usize = 64;
-            while (budget > 0 and loop.executor.runOne()) : (budget -= 1) {}
-
-            loop.activate(nanoseconds(try now()));
-            loop.start();
-
-            const signaled = try loop.events(false);
-            try loop.cancelAndExpire(nanoseconds(try now()));
-
-            // A wake consumed above may be the only notification for an unserviced post.
-            if (signaled) continue;
-            if (loop.executor.ready.first != null or loop.pending.first != null) continue;
-
-            if (loop.live.first == null and !loop.control.hasWork()) {
-                if (!loop.control.idle(&loop.executor)) continue;
-                assert(loop.active == 0);
-                return;
-            }
-
-            _ = try loop.events(true);
-        }
+    fn park(loop: *Loop) !void {
+        _ = try loop.events(true);
     }
 
     pub fn cancel(loop: *Loop, op: *io.Operation) void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
         assert(op.loop == loop and op.state == .inflight and op.cancel_requested);
     }
 

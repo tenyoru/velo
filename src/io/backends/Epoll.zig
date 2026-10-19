@@ -39,29 +39,18 @@ pub fn deinit(state: *State) void {
     _ = linux.close(state.fd);
 }
 
-pub fn run(loop: *io.Loop, state: *State) !void {
-    while (true) {
-        if (loop.control.service(&loop.executor)) return;
+pub fn turn(loop: *io.Loop, state: *State) !bool {
+    try activate(loop, state, nanoseconds(try io.now()));
+    try start(state);
 
-        var budget: usize = 64;
-        while (budget > 0 and loop.executor.runOne()) : (budget -= 1) {}
+    // service checks control directly; only a blocking poll needs the wake fd.
+    const woke = state.live.first != null and try events(loop, state, false);
+    try expire(state, nanoseconds(try io.now()));
+    return woke;
+}
 
-        try activate(loop, state, nanoseconds(try io.now()));
-        try start(state);
-
-        // service checks control directly; only a blocking poll needs the wake fd.
-        const woke = state.live.first != null and try events(loop, state, false);
-        try expire(state, nanoseconds(try io.now()));
-        if (woke or loop.executor.ready.first != null or loop.pending.first != null) continue;
-
-        if (state.live.first == null and !loop.control.hasWork()) {
-            if (!loop.control.idle(&loop.executor)) continue;
-            assert(loop.active == 0);
-            return;
-        }
-
-        _ = try events(loop, state, true);
-    }
+pub fn park(loop: *io.Loop, state: *State) !void {
+    _ = try events(loop, state, true);
 }
 
 fn activate(loop: *io.Loop, state: *State, timestamp: i128) !void {

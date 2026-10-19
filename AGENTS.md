@@ -50,6 +50,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/io/root.zig`: public aliases, backend selection, and lifetime contract
 - `src/io/Operation.zig`: shared operation state, typed coroutine wrappers,
   cancellation, and completion accounting
+- `src/io/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`, and
+  control forwarders; comptime check of backend fields and the
+  `turn`/`inflight`/`park`/`close` hooks
 - `src/io/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation
 - `src/io/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO,

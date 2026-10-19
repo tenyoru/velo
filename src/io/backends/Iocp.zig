@@ -5,7 +5,6 @@ const std = @import("std");
 const io = @import("../root.zig");
 const co = @import("../../coroutines/root.zig");
 const Control = @import("../Control.zig");
-const ThreadGuard = @import("../../ThreadGuard.zig");
 const w = @import("win32.zig");
 const ws = std.os.windows.ws2_32;
 const assert = std.debug.assert;
@@ -141,6 +140,7 @@ pub const Loop = struct {
     active: usize = 0,
     running: bool = false,
     live: std.DoublyLinkedList = .{},
+    park_ms: u32 = 0,
 
     const wake_key: usize = 1;
 
@@ -150,25 +150,19 @@ pub const Loop = struct {
             @panic("IOCP wake failed");
     }
 
-    pub fn post(loop: *Loop, command: *Control.Post) void {
-        loop.control.post(command);
-    }
-
-    pub fn retain(loop: *Loop) void {
-        loop.control.retain();
-    }
-
-    pub fn release(loop: *Loop) void {
-        loop.control.release();
-    }
-
-    pub fn stop(loop: *Loop) void {
-        loop.control.stop();
-    }
-
-    pub fn shutdown(loop: *Loop) void {
-        loop.control.shutdown();
-    }
+    const shared = @import("../loop.zig").Shared(Loop, .{
+        .turn = turn,
+        .inflight = inflight,
+        .park = park,
+        .close = close,
+    });
+    pub const run = shared.run;
+    pub const deinit = shared.deinit;
+    pub const post = shared.post;
+    pub const retain = shared.retain;
+    pub const release = shared.release;
+    pub const stop = shared.stop;
+    pub const shutdown = shared.shutdown;
 
     pub fn init(options: Options) !Loop {
         if (options.entries == 0) return error.InvalidArgument;
@@ -188,16 +182,8 @@ pub const Loop = struct {
         return .{ .port = port };
     }
 
-    pub fn deinit(loop: *Loop) void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
-        assert(!loop.running and loop.active == 0);
-        assert(loop.pending.first == null and loop.live.first == null and
-            loop.executor.ready.first == null);
-        assert(loop.executor.all_tasks.first == null);
-
-        loop.control.deinit();
+    fn close(loop: *Loop) void {
+        assert(loop.live.first == null);
 
         const closed = w.CloseHandle(loop.port);
         assert(closed != 0);
@@ -207,53 +193,38 @@ pub const Loop = struct {
     }
 
     pub fn cancel(loop: *Loop, op: *io.Operation) void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
-
         assert(op.loop == loop and op.state == .inflight);
         op.cancel_requested = true;
         if (op.data == .timeout) loop.finish(op, w.OPERATION_ABORTED, 0);
     }
 
-    pub fn run(loop: *Loop) !void {
-        const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
-        defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
+    fn turn(loop: *Loop) !bool {
+        var completions: usize = 0;
+        while (completions < 64 and try loop.completion(0)) : (completions += 1) {}
 
-        assert(!loop.running);
-        loop.running = true;
-        defer loop.running = false;
+        while (loop.pending.first) |node| {
+            const op: *io.Operation = @fieldParentPtr("node", node);
+            const current = ns(try now());
 
-        while (true) {
-            if (loop.control.service(&loop.executor)) return;
-
-            var budget: usize = 64;
-            while (budget > 0 and loop.executor.runOne()) : (budget -= 1) {}
-
-            var completions: usize = 0;
-            while (completions < 64 and try loop.completion(0)) : (completions += 1) {}
-            if (loop.control.service(&loop.executor)) return;
-
-            while (loop.pending.first) |node| {
-                const op: *io.Operation = @fieldParentPtr("node", node);
-                const current = ns(try now());
-
-                loop.pending.remove(node);
-                loop.live.append(node);
-                op.state = .inflight;
-                loop.submit(op, current);
-            }
-
-            const wait = try loop.deadlines(ns(try now()));
-            if (loop.executor.ready.first != null) continue;
-
-            if (loop.live.first == null and !loop.control.hasWork()) {
-                if (!loop.control.idle(&loop.executor)) continue;
-                assert(loop.active == 0);
-                return;
-            }
-
-            _ = try loop.completion(wait);
+            loop.pending.remove(node);
+            loop.live.append(node);
+            op.state = .inflight;
+            loop.submit(op, current);
         }
+
+        // Deadlines can finish timers, so they run before the ready check, not in park.
+        loop.park_ms = try loop.deadlines(ns(try now()));
+
+        // A dequeued wake may be the only notification for an unserviced post.
+        return completions > 0;
+    }
+
+    fn inflight(loop: *const Loop) bool {
+        return loop.live.first != null;
+    }
+
+    fn park(loop: *Loop) !void {
+        _ = try loop.completion(loop.park_ms);
     }
 
     fn finish(loop: *Loop, op: *io.Operation, code: u32, bytes: usize) void {
