@@ -4,7 +4,9 @@ const builtin = @import("builtin");
 const ThreadGuard = @This();
 pub const enabled = builtin.is_test and std.debug.runtime_safety and !builtin.single_threaded;
 
-owner: if (enabled) std.atomic.Value(std.Thread.Id) else void = if (enabled) .init(0) else {},
+const Owner = if (enabled) std.atomic.Value(std.Thread.Id) else void;
+
+owner: Owner = if (enabled) Owner.init(0),
 
 comptime {
     if (!enabled and @sizeOf(ThreadGuard) != 0)
