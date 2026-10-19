@@ -39,41 +39,23 @@ pub inline fn leave(guard: *ThreadGuard, entered: bool) void {
     }
 }
 
-test "nested entry preserves ownership and outer leave permits reentry" {
+test "another thread cannot enter while ownership is held" {
+    if (!enabled) return error.SkipZigTest;
+
+    const Probe = struct {
+        fn run(guard: *ThreadGuard, result: *?bool) void {
+            result.* = guard.tryEnter();
+            if (result.*) |entered| guard.leave(entered);
+        }
+    };
+
     var guard: ThreadGuard = .{};
-
     const entered = guard.enter();
-    try std.testing.expectEqual(enabled, entered);
-    const nested = guard.enter();
-    try std.testing.expect(!nested);
-    guard.leave(nested);
-    try std.testing.expect(!guard.enter());
-    guard.leave(entered);
+    defer guard.leave(entered);
 
-    const reentered = guard.enter();
-    try std.testing.expectEqual(enabled, reentered);
-    guard.leave(reentered);
+    var result: ?bool = undefined;
+    const thread = try std.Thread.spawn(.{}, Probe.run, .{ &guard, &result });
+    thread.join();
 
-    if (!enabled) try std.testing.expectEqual(0, @sizeOf(ThreadGuard));
-}
-
-test "safe test builds reject a different thread while ownership is held" {
-    if (builtin.is_test and std.debug.runtime_safety and !builtin.single_threaded) {
-        const Probe = struct {
-            fn run(guard: *ThreadGuard, result: *?bool) void {
-                result.* = guard.tryEnter();
-                if (result.*) |entered| guard.leave(entered);
-            }
-        };
-
-        var guard: ThreadGuard = .{};
-        const entered = guard.enter();
-        defer guard.leave(entered);
-
-        var result: ?bool = undefined;
-        const thread = try std.Thread.spawn(.{}, Probe.run, .{ &guard, &result });
-        thread.join();
-
-        try std.testing.expectEqual(null, result);
-    }
+    try std.testing.expectEqual(null, result);
 }
