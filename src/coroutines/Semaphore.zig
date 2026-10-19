@@ -88,7 +88,7 @@ test "semaphore grants FIFO without barging and preserves a late-canceled permit
     ex.spawn(&first.task);
     ex.run();
 
-    try first.result.?;
+    try first.getResult();
     try std.testing.expectEqual(0, sem.permits);
 
     var a: co.Frame(Acquire) = .{ .coroutine = sem.acquire() };
@@ -107,7 +107,7 @@ test "semaphore grants FIFO without barging and preserves a late-canceled permit
     ex.spawn(&c.task);
     ex.run();
 
-    try a.result.?;
+    try a.getResult();
     try std.testing.expectEqual(null, b.result);
     try std.testing.expectEqual(null, c.result);
 
@@ -118,7 +118,7 @@ test "semaphore grants FIFO without barging and preserves a late-canceled permit
 
     ex.run();
 
-    try std.testing.expectError(error.Canceled, b.result.?);
+    try std.testing.expectError(error.Canceled, b.getResult());
 
     sem.release();
 
@@ -126,7 +126,7 @@ test "semaphore grants FIFO without barging and preserves a late-canceled permit
 
     ex.run();
 
-    try c.result.?;
+    try c.getResult();
 
     sem.release();
 
@@ -147,7 +147,7 @@ test "semaphore pre-cancel leaves permits and cancelAll drains blocked acquisiti
     ex.spawn(&pre.task);
     ex.run();
 
-    try std.testing.expectError(error.Canceled, pre.result.?);
+    try std.testing.expectError(error.Canceled, pre.getResult());
     try std.testing.expectEqual(2, sem.permits);
 
     sem.permits = 0;
@@ -164,8 +164,8 @@ test "semaphore pre-cancel leaves permits and cancelAll drains blocked acquisiti
 
     ex.run();
 
-    try std.testing.expectError(error.Canceled, a.result.?);
-    try std.testing.expectError(error.Canceled, b.result.?);
+    try std.testing.expectError(error.Canceled, a.getResult());
+    try std.testing.expectError(error.Canceled, b.getResult());
     try std.testing.expectEqual(0, a.task.outstanding_io);
     try std.testing.expectEqual(0, b.task.outstanding_io);
 

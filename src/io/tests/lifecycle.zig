@@ -34,7 +34,7 @@ fn cancelUnsubmitted(operation: anytype, queued: bool) !void {
     support.run(loop);
     defer frame.coroutine.deinit();
 
-    try testing.expectError(error.OperationCanceled, frame.result.?);
+    try testing.expectError(error.OperationCanceled, frame.getResult());
 
     frame.coroutine.cancel();
     frame.coroutine.cancel();
@@ -95,13 +95,13 @@ fn cancelRegistered(loop: *io.Loop, frames: anytype) !void {
 
     for (frames) |*frame| frame.coroutine.deinit();
 
-    try canceller.result.?;
+    try canceller.getResult();
     try testing.expect(canceller.coroutine.first_registered);
     try testing.expectEqual(frames.len, canceller.coroutine.inflight);
     try testing.expectEqual(0, canceller.task.outstanding_io);
 
     for (frames) |*frame| {
-        try testing.expectError(error.OperationCanceled, frame.result.?);
+        try testing.expectError(error.OperationCanceled, frame.getResult());
 
         frame.coroutine.cancel();
         frame.coroutine.cancel();
@@ -202,7 +202,7 @@ test "lifecycle join waits for both real timers and completed cancellation is a 
         defer joined.coroutine.a.deinit();
         defer joined.coroutine.b.deinit();
 
-        const result = joined.result.?;
+        const result = joined.getResult();
         try result.a;
         try result.b;
         const after = try io.now();
@@ -249,7 +249,7 @@ test "lifecycle race keeps timer success drains canceled receive and permits soc
         raced.coroutine.a.deinit();
         raced.coroutine.b.deinit();
 
-        const result = raced.result.?;
+        const result = raced.getResult();
         try testing.expectEqual(.b, result.winner);
         try result.b;
         try testing.expectError(error.OperationCanceled, result.a);
@@ -277,8 +277,8 @@ test "lifecycle race keeps timer success drains canceled receive and permits soc
         defer transfer.coroutine.a.deinit();
         defer transfer.coroutine.b.deinit();
 
-        try testing.expectEqual(1, try transfer.result.?.a);
-        try testing.expectEqual(1, try transfer.result.?.b);
+        try testing.expectEqual(1, try transfer.getResult().a);
+        try testing.expectEqual(1, try transfer.getResult().b);
         try testing.expectEqualStrings("x", &buffer);
         try testing.expectEqual(0, transfer.task.outstanding_io);
         try support.drained(&loop);

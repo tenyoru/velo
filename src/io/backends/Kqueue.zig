@@ -674,8 +674,8 @@ test "kqueue datagrams report truncation and accept empty messages" {
     loop.executor.spawn(&send.task);
     try loop.run();
 
-    try std.testing.expectEqual(5, try send.result.?);
-    try std.testing.expectError(error.MessageTooBig, recv.result.?);
+    try std.testing.expectEqual(5, try send.getResult());
+    try std.testing.expectError(error.MessageTooBig, recv.getResult());
     try std.testing.expectEqual(@sizeOf(@TypeOf(source)), source_length);
     try std.testing.expect(source.port != 0);
 
@@ -702,8 +702,8 @@ test "kqueue datagrams report truncation and accept empty messages" {
     loop.executor.spawn(&recv.task);
     loop.executor.spawn(&send.task);
     try loop.run();
-    try std.testing.expectEqual(0, try send.result.?);
-    try std.testing.expectEqual(0, try recv.result.?);
+    try std.testing.expectEqual(0, try send.getResult());
+    try std.testing.expectEqual(0, try recv.getResult());
 
     recv.coroutine.deinit();
     send.coroutine.deinit();

@@ -77,8 +77,8 @@ test "worker queued cancellation skips action and running cancellation retains r
         release.set(std_io);
         support.run(&loop);
 
-        try testing.expectEqual(17, try running.result.?);
-        try testing.expectError(error.OperationCanceled, queued.result.?);
+        try testing.expectEqual(17, try running.getResult());
+        try testing.expectError(error.OperationCanceled, queued.getResult());
         try testing.expectEqual(1, calls.load(.acquire));
         try testing.expectEqual(0, running.task.outstanding_io);
         try testing.expectEqual(0, queued.task.outstanding_io);
@@ -115,7 +115,7 @@ test "worker task cancellation before submission never runs action" {
     frame.task.cancel();
     support.run(&loop);
 
-    try testing.expectError(error.OperationCanceled, frame.result.?);
+    try testing.expectError(error.OperationCanceled, frame.getResult());
     try testing.expectEqual(0, calls.load(.acquire));
     try testing.expectEqual(0, frame.task.outstanding_io);
 
@@ -176,8 +176,8 @@ test "worker blocked action does not block native loop timer" {
         loop.executor.spawn(&timer.task);
         support.run(&loop);
 
-        try timer.result.?;
-        try testing.expectEqual(42, try work.result.?);
+        try timer.getResult();
+        try testing.expectEqual(42, try work.getResult());
         try testing.expectEqual(0, work.task.outstanding_io);
 
         work.coroutine.deinit();
@@ -241,9 +241,9 @@ test "worker fixed concurrency drains many jobs with over-aligned actions and re
 
     for (&frames, 0..) |*frame, i| {
         if (i == 2) {
-            try testing.expectError(error.OperationCanceled, frame.result.?);
+            try testing.expectError(error.OperationCanceled, frame.getResult());
         } else {
-            try testing.expectEqual(i, (try frame.result.?).value);
+            try testing.expectEqual(i, (try frame.getResult()).value);
         }
         try testing.expectEqual(0, frame.task.outstanding_io);
 
@@ -288,9 +288,9 @@ test "worker shutdown cancels queued jobs drains running results rejects new wor
         release.set(pool.threaded.io());
         support.run(&loop);
 
-        try testing.expectEqual(0, try frames[0].result.?);
-        try testing.expectError(error.OperationCanceled, frames[1].result.?);
-        try testing.expectError(error.OperationCanceled, frames[2].result.?);
+        try testing.expectEqual(0, try frames[0].getResult());
+        try testing.expectError(error.OperationCanceled, frames[1].getResult());
+        try testing.expectError(error.OperationCanceled, frames[2].getResult());
         try testing.expectEqual(1, calls.load(.acquire));
         try testing.expect(!loop.control.hasWork());
         try testing.expectEqual(null, loop.control.registrations.first);

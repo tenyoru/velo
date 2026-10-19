@@ -91,5 +91,5 @@ fn run(loop: *io.Loop, work: anytype) @TypeOf(work.result) {
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
     frame.coroutine.deinit();
-    return frame.result.?;
+    return frame.getResult();
 }

@@ -46,6 +46,11 @@ pub fn Frame(comptime C: type) type {
             self.task.cancel();
         }
 
+        /// Requires completion; does not wait for or drive the coroutine.
+        pub fn getResult(self: *const Self) T {
+            return self.result.?;
+        }
+
         fn cancelTask(task: *Task) void {
             const self: *Self = @alignCast(@fieldParentPtr("task", task));
 

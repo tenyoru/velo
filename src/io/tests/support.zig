@@ -95,9 +95,9 @@ pub fn pair(loop: *io.Loop, comptime family: io.AddressFamily) ![2]io.Socket {
     defer accept.coroutine.deinit();
     defer connect.coroutine.deinit();
 
-    const server = try accept.result.?;
+    const server = try accept.getResult();
     errdefer close(server);
-    try connect.result.?;
+    try connect.getResult();
 
     accept.coroutine.cancel();
     accept.coroutine.cancel();

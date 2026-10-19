@@ -147,7 +147,7 @@ test "wakes are deduplicated and dropped on completion" {
     probe.task.wake();
     ex.run();
 
-    try std.testing.expectEqual(3, probe.result.?);
+    try std.testing.expectEqual(3, probe.getResult());
     try std.testing.expectEqual(null, ex.ready.first);
 }
 
@@ -193,7 +193,7 @@ test "cancelAll covers parked and scheduled tasks and completion unregisters" {
     for ([_]*coroutines.Frame(Probe){ &a, &b, &c }) |frame| {
         frame.cancel();
 
-        try std.testing.expectError(error.Canceled, frame.result.?);
+        try std.testing.expectError(error.Canceled, frame.getResult());
         try std.testing.expectEqual(1, frame.coroutine.cancel_calls);
         try std.testing.expect(!frame.task.registered);
     }

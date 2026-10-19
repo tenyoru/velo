@@ -36,7 +36,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &create);
 
-        const file = try create.result.?;
+        const file = try create.getResult();
         var closed = false;
         defer if (!closed) file.close(testing.io);
 
@@ -54,7 +54,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
             finish(&loop, &write);
 
-            const n = try write.result.?;
+            const n = try write.getResult();
             try testing.expect(n > 0 and n <= bytes.len - offset);
             offset += n;
         }
@@ -69,13 +69,13 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &patch);
 
-        try testing.expectEqual(1, try patch.result.?);
+        try testing.expectEqual(1, try patch.getResult());
 
         var sync: co.Frame(fs.Sync) = .{ .coroutine = fs.Sync.init(&pool, .{ .file = file }) };
 
         finish(&loop, &sync);
 
-        try sync.result.?;
+        try sync.getResult();
 
         var buffer: [64]u8 = undefined;
         var read: co.Frame(fs.ReadAt) = .{
@@ -88,7 +88,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &read);
 
-        const n = try read.result.?;
+        const n = try read.getResult();
         try testing.expectEqual(11, n);
         try testing.expectEqualStrings("Zello world", buffer[0..n]);
 
@@ -102,7 +102,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &eof);
 
-        try testing.expectEqual(0, try eof.result.?);
+        try testing.expectEqual(0, try eof.getResult());
 
         var empty_write: co.Frame(fs.WriteAt) = .{
             .coroutine = fs.WriteAt.init(&pool, .{
@@ -114,13 +114,13 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &empty_write);
 
-        try testing.expectEqual(0, try empty_write.result.?);
+        try testing.expectEqual(0, try empty_write.getResult());
 
         var close: co.Frame(fs.Close) = .{ .coroutine = fs.Close.init(&pool, .{ .file = file }) };
 
         finish(&loop, &close);
 
-        try close.result.?;
+        try close.getResult();
         closed = true;
 
         var open: co.Frame(fs.Open) = .{
@@ -132,7 +132,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &open);
 
-        const reopened = try open.result.?;
+        const reopened = try open.getResult();
         defer reopened.close(testing.io);
 
         var short_buffer: [3]u8 = undefined;
@@ -146,7 +146,7 @@ test "filesystem create positional roundtrip sync close and reopen" {
 
         finish(&loop, &read);
 
-        try testing.expectEqual(3, try read.result.?);
+        try testing.expectEqual(3, try read.getResult());
         try testing.expectEqualStrings("Zel", &short_buffer);
         try testing.expectEqual(0, pool.outstanding);
         try testing.expect(!loop.control.hasWork());
@@ -173,7 +173,7 @@ test "filesystem missing paths propagate errors and cancellation before open acq
 
     finish(&loop, &open);
 
-    try testing.expectError(error.FileNotFound, open.result.?);
+    try testing.expectError(error.FileNotFound, open.getResult());
 
     var create: co.Frame(fs.Create) = .{
         .coroutine = fs.Create.init(&pool, .{
@@ -184,7 +184,7 @@ test "filesystem missing paths propagate errors and cancellation before open acq
 
     finish(&loop, &create);
 
-    try testing.expectError(error.FileNotFound, create.result.?);
+    try testing.expectError(error.FileNotFound, create.getResult());
 
     create = .{
         .coroutine = fs.Create.init(&pool, .{
@@ -196,7 +196,7 @@ test "filesystem missing paths propagate errors and cancellation before open acq
     create.coroutine.cancel();
     finish(&loop, &create);
 
-    try testing.expectError(error.OperationCanceled, create.result.?);
+    try testing.expectError(error.OperationCanceled, create.getResult());
     try testing.expectError(error.FileNotFound, tmp.dir.openFile(testing.io, "canceled", .{}));
 }
 
@@ -228,12 +228,12 @@ test "filesystem completed open wins cancellation and preserves caller owned han
     open.coroutine.cancel();
     support.run(&loop);
 
-    const file = try open.result.?;
+    const file = try open.getResult();
     var close: co.Frame(fs.Close) = .{ .coroutine = fs.Close.init(&pool, .{ .file = file }) };
 
     finish(&loop, &close);
 
-    try close.result.?;
+    try close.getResult();
 
     open.coroutine.deinit();
 

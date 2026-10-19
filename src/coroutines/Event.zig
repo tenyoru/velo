@@ -108,15 +108,15 @@ test "event broadcast is FIFO and survives reset and late cancellation" {
     try std.testing.expectEqual(null, event.waiters.first);
 
     try std.testing.expect(ex.runOne());
-    try std.testing.expectError(error.Canceled, b.result.?);
+    try std.testing.expectError(error.Canceled, b.getResult());
     try std.testing.expectEqual(null, a.result);
 
     try std.testing.expect(ex.runOne());
-    try a.result.?;
+    try a.getResult();
     try std.testing.expectEqual(null, c.result);
 
     try std.testing.expect(ex.runOne());
-    try c.result.?;
+    try c.getResult();
 
     for ([_]*co.Task{ &a.task, &b.task, &c.task }) |task| {
         try std.testing.expectEqual(0, task.outstanding_io);
@@ -132,14 +132,14 @@ test "event broadcast is FIFO and survives reset and late cancellation" {
     event.set();
     ex.run();
 
-    try next.result.?;
+    try next.getResult();
 
     var immediate: co.Frame(Wait) = .{ .coroutine = event.wait() };
 
     ex.spawn(&immediate.task);
     ex.run();
 
-    try immediate.result.?;
+    try immediate.getResult();
     try std.testing.expectEqual(0, immediate.task.outstanding_io);
 }
 
@@ -170,7 +170,7 @@ test "event honors pre-cancel and task cancellation without a parent cancel meth
     ex.cancelAll();
     ex.run();
 
-    try std.testing.expectError(error.Canceled, parent.result.?);
+    try std.testing.expectError(error.Canceled, parent.getResult());
     try std.testing.expectEqual(0, parent.task.outstanding_io);
 
     inline for (.{ false, true }) |signaled| {
@@ -181,7 +181,7 @@ test "event honors pre-cancel and task cancellation without a parent cancel meth
         ex.spawn(&frame.task);
         ex.run();
 
-        try std.testing.expectError(error.Canceled, frame.result.?);
+        try std.testing.expectError(error.Canceled, frame.getResult());
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
 }

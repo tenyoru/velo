@@ -227,8 +227,8 @@ test "channel buffers FIFO across wrap and grants blocked senders without bargin
     for (sends[0..4]) |*frame| ex.spawn(&frame.task);
     ex.run();
 
-    try sends[0].result.?;
-    try sends[1].result.?;
+    try sends[0].getResult();
+    try sends[1].getResult();
     try std.testing.expectEqual(2, channel.count);
     try std.testing.expectEqual(2, channel.senders.len());
 
@@ -237,14 +237,14 @@ test "channel buffers FIFO across wrap and grants blocked senders without bargin
     ex.spawn(&first.task);
     try std.testing.expect(ex.runOne());
 
-    try std.testing.expectEqual(1, try first.result.?);
+    try std.testing.expectEqual(1, try first.getResult());
     try std.testing.expectEqual(1, sends[2].task.outstanding_io);
 
     sends[2].cancel();
     ex.spawn(&sends[4].task);
     ex.run();
 
-    try sends[2].result.?;
+    try sends[2].getResult();
     try std.testing.expectEqual(null, sends[3].result);
     try std.testing.expectEqual(null, sends[4].result);
 
@@ -257,11 +257,11 @@ test "channel buffers FIFO across wrap and grants blocked senders without bargin
     ex.run();
 
     for (&receives, 2..) |*frame, expected| {
-        try std.testing.expectEqual(expected, try frame.result.?);
+        try std.testing.expectEqual(expected, try frame.getResult());
     }
 
     for (&sends) |*frame| {
-        try frame.result.?;
+        try frame.getResult();
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
     try std.testing.expectEqual(0, channel.count);
@@ -306,7 +306,7 @@ test "channel receiver FIFO preserves high-alignment resources through late canc
     ex.spawn(&b.task);
     try std.testing.expect(ex.runOne());
 
-    try std.testing.expectError(error.Canceled, receives[1].result.?);
+    try std.testing.expectError(error.Canceled, receives[1].getResult());
 
     try std.testing.expect(ex.runOne());
     try std.testing.expectEqual(1, receives[0].task.outstanding_io);
@@ -314,10 +314,10 @@ test "channel receiver FIFO preserves high-alignment resources through late canc
     receives[0].cancel();
     ex.run();
 
-    try a.result.?;
-    try b.result.?;
-    const av = try receives[0].result.?;
-    const bv = try receives[2].result.?;
+    try a.getResult();
+    try b.getResult();
+    const av = try receives[0].getResult();
+    const bv = try receives[2].getResult();
 
     try std.testing.expectEqual(@as(u128, 1 << 100), av.id);
     try std.testing.expectEqual(@as(u128, 2 << 100), bv.id);
@@ -358,7 +358,7 @@ test "channel close rejects queued sends without losing values and drains buffer
     ex.run();
 
     for (sends[2..], owned[2..]) |*frame, value| {
-        try std.testing.expectError(error.Closed, frame.result.?);
+        try std.testing.expectError(error.Closed, frame.getResult());
         try std.testing.expect(value and frame.coroutine.value.*);
         frame.coroutine.value.* = false;
         try std.testing.expectEqual(0, frame.task.outstanding_io);
@@ -369,7 +369,7 @@ test "channel close rejects queued sends without losing values and drains buffer
     ex.spawn(&rejected.task);
     ex.run();
 
-    try std.testing.expectError(error.Closed, rejected.result.?);
+    try std.testing.expectError(error.Closed, rejected.getResult());
 
     var receives: [3]co.Frame(Ch.Recv) = undefined;
 
@@ -380,14 +380,14 @@ test "channel close rejects queued sends without losing values and drains buffer
     ex.run();
 
     for (receives[0..2], owned[0..2], 0..) |*frame, value, i| {
-        const resource = try frame.result.?;
+        const resource = try frame.getResult();
 
         try std.testing.expectEqual(&owned[i], resource);
         try std.testing.expect(value and resource.*);
         resource.* = false;
     }
 
-    try std.testing.expectError(error.Closed, receives[2].result.?);
+    try std.testing.expectError(error.Closed, receives[2].getResult());
     try std.testing.expectEqualSlices(bool, &.{ false, false, false, false }, &owned);
 }
 
@@ -418,7 +418,7 @@ test "channel cancellation unlinks pending sends and receives before waking" {
     ex.spawn(&next.task);
     ex.run();
 
-    try std.testing.expectError(error.Canceled, waiting.result.?);
+    try std.testing.expectError(error.Canceled, waiting.getResult());
     try std.testing.expectEqual(0, waiting.task.outstanding_io);
 
     canceled.cancel();
@@ -433,12 +433,12 @@ test "channel cancellation unlinks pending sends and receives before waking" {
     ex.spawn(&b.task);
     ex.run();
 
-    try std.testing.expectError(error.Canceled, canceled.result.?);
+    try std.testing.expectError(error.Canceled, canceled.getResult());
     try std.testing.expectEqual(8, canceled.coroutine.value);
     try std.testing.expectEqual(0, canceled.task.outstanding_io);
-    try next.result.?;
-    try std.testing.expectEqual(7, try a.result.?);
-    try std.testing.expectEqual(9, try b.result.?);
+    try next.getResult();
+    try std.testing.expectEqual(7, try a.getResult());
+    try std.testing.expectEqual(9, try b.getResult());
 }
 
 test "channel pre-cancel does not consume available values or buffer space" {
@@ -454,7 +454,7 @@ test "channel pre-cancel does not consume available values or buffer space" {
     ex.spawn(&send.task);
     ex.run();
 
-    try std.testing.expectError(error.Canceled, send.result.?);
+    try std.testing.expectError(error.Canceled, send.getResult());
     try std.testing.expectEqual(0, channel.count);
 
     var fill: co.Frame(Ch.Send) = .{ .coroutine = channel.send(null) };
@@ -462,7 +462,7 @@ test "channel pre-cancel does not consume available values or buffer space" {
     ex.spawn(&fill.task);
     ex.run();
 
-    try fill.result.?;
+    try fill.getResult();
 
     var canceled: co.Frame(Ch.Recv) = .{ .coroutine = channel.recv() };
 
@@ -470,7 +470,7 @@ test "channel pre-cancel does not consume available values or buffer space" {
     ex.spawn(&canceled.task);
     ex.run();
 
-    try std.testing.expectError(error.Canceled, canceled.result.?);
+    try std.testing.expectError(error.Canceled, canceled.getResult());
     try std.testing.expectEqual(1, channel.count);
 
     var recv: co.Frame(Ch.Recv) = .{ .coroutine = channel.recv() };
@@ -478,7 +478,7 @@ test "channel pre-cancel does not consume available values or buffer space" {
     ex.spawn(&recv.task);
     ex.run();
 
-    try std.testing.expectEqual(null, try recv.result.?);
+    try std.testing.expectEqual(null, try recv.getResult());
     try std.testing.expectEqual(0, send.task.outstanding_io);
     try std.testing.expectEqual(0, canceled.task.outstanding_io);
 }
@@ -500,8 +500,8 @@ test "channel rendezvous supports either arrival order and close wakes empty rec
         ex.spawn(if (sender_first) &recv.task else &send.task);
         ex.run();
 
-        try send.result.?;
-        try std.testing.expectEqual(@as(u128, 1 << 100), try recv.result.?);
+        try send.getResult();
+        try std.testing.expectEqual(@as(u128, 1 << 100), try recv.getResult());
         try std.testing.expectEqual(0, send.task.outstanding_io);
         try std.testing.expectEqual(0, recv.task.outstanding_io);
 
@@ -517,7 +517,7 @@ test "channel rendezvous supports either arrival order and close wakes empty rec
 
         ex.run();
 
-        try std.testing.expectError(error.Closed, closed.result.?);
+        try std.testing.expectError(error.Closed, closed.getResult());
         try std.testing.expectEqual(0, closed.task.outstanding_io);
 
         var immediate: co.Frame(Ch.Recv) = .{ .coroutine = channel.recv() };
@@ -525,6 +525,6 @@ test "channel rendezvous supports either arrival order and close wakes empty rec
         ex.spawn(&immediate.task);
         ex.run();
 
-        try std.testing.expectError(error.Closed, immediate.result.?);
+        try std.testing.expectError(error.Closed, immediate.getResult());
     }
 }

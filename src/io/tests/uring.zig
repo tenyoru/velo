@@ -91,7 +91,7 @@ test "io kernel timeout wakes once and operation can be reused after ready" {
     loop.executor.spawn(&frame.task);
     run(&loop);
 
-    try frame.result.?;
+    try frame.getResult();
     const after = deadline(0);
     try testing.expect(after.sec > before.sec or after.nsec >= before.nsec + 2_000_000);
     try testing.expectEqual(linux.E.TIME, frame.coroutine.op.primaryError().?);
@@ -113,7 +113,7 @@ test "io kernel timeout wakes once and operation can be reused after ready" {
     loop.executor.spawn(&frame.task);
     run(&loop);
 
-    try frame.result.?;
+    try frame.getResult();
 
     frame.coroutine.op.deinit();
 
@@ -143,7 +143,7 @@ test "io linked recv expires and drains both CQEs; ready recv cancels long timer
     loop.executor.spawn(&frame.task);
     run(&loop);
 
-    try testing.expectError(error.Timeout, frame.result.?);
+    try testing.expectError(error.Timeout, frame.getResult());
     try testing.expectEqual(linux.E.CANCELED, frame.coroutine.op.primaryError().?);
     try testing.expectEqual(linux.E.TIME, frame.coroutine.op.deadlineError().?);
     try testing.expectEqual(0, frame.task.outstanding_io);
@@ -170,7 +170,7 @@ test "io linked recv expires and drains both CQEs; ready recv cancels long timer
     loop.executor.spawn(&frame.task);
     run(&loop);
 
-    try testing.expectEqual(4, try frame.result.?);
+    try testing.expectEqual(4, try frame.getResult());
     try testing.expectEqualStrings("ping", &buffer);
     try testing.expectEqual(null, frame.coroutine.op.primaryError());
     try testing.expectEqual(linux.E.CANCELED, frame.coroutine.op.deadlineError().?);
@@ -196,7 +196,7 @@ test "io invalid descriptor preserves kernel errno" {
     loop.executor.spawn(&frame.task);
     run(&loop);
 
-    try testing.expectError(error.BadFileDescriptor, frame.result.?);
+    try testing.expectError(error.BadFileDescriptor, frame.getResult());
     try testing.expectEqual(linux.E.BADF, frame.coroutine.op.primaryError().?);
 
     frame.coroutine.op.deinit();
@@ -242,8 +242,8 @@ test "io tiny ring drains queued timers and linked receives without losing work"
     run(&loop);
 
     for (&timers, &recvs) |*timer, *recv| {
-        try timer.result.?;
-        try testing.expectError(error.Timeout, recv.result.?);
+        try timer.getResult();
+        try testing.expectError(error.Timeout, recv.getResult());
         try testing.expectEqual(linux.E.TIME, recv.coroutine.op.deadlineError().?);
         try testing.expectEqual(linux.E.CANCELED, recv.coroutine.op.primaryError().?);
         try testing.expectEqual(0, timer.task.outstanding_io);
@@ -395,7 +395,7 @@ test "io yielding peer cannot starve kernel timeout" {
     loop.executor.spawn(&stopper.task);
     run(&loop);
 
-    try stopper.result.?;
+    try stopper.getResult();
     try testing.expect(spinner.result != null);
     try testing.expect(spinner.coroutine.polls > 1);
 
@@ -446,7 +446,7 @@ test "io loopback TCP connect echo partial transfers and async close" {
     loop.executor.spawn(&connect.task);
     run(&loop);
 
-    try connect.result.?;
+    try connect.getResult();
 
     connect.coroutine.op.deinit();
 
@@ -489,8 +489,8 @@ test "io loopback TCP connect echo partial transfers and async close" {
     loop.executor.spawn(&b.task);
     run(&loop);
 
-    try a.result.?;
-    try b.result.?;
+    try a.getResult();
+    try b.getResult();
     try testing.expectEqualSlices(u8, &expected, &sent);
     try testing.expectEqualSlices(u8, &expected, &echoed);
     try drained(&loop);
@@ -504,9 +504,9 @@ test "io loopback TCP connect echo partial transfers and async close" {
 
     run(&loop);
 
-    closes[0].result.? catch @panic("async client close failed");
+    closes[0].getResult() catch @panic("async client close failed");
     client_open = false;
-    closes[1].result.? catch @panic("async server close failed");
+    closes[1].getResult() catch @panic("async server close failed");
     server_open = false;
 
     for (&closes) |*frame| frame.coroutine.op.deinit();
@@ -556,8 +556,8 @@ test "io pending sends unblock submitted receives with tiny ring" {
     run(&loop);
 
     for (&recvs, &sends, &bytes) |*recv, *send, *buffer| {
-        try testing.expectEqual(1, try recv.result.?);
-        try testing.expectEqual(1, try send.result.?);
+        try testing.expectEqual(1, try recv.getResult());
+        try testing.expectEqual(1, try send.getResult());
         try testing.expectEqualStrings("x", buffer);
         try testing.expectEqual(0, recv.task.outstanding_io);
         try testing.expectEqual(0, send.task.outstanding_io);

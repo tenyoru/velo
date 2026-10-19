@@ -27,7 +27,7 @@ test "portable io timer reuse and immediate invalid descriptor" {
         loop.executor.spawn(&timer.task);
         support.run(&loop);
 
-        try timer.result.?;
+        try timer.getResult();
         const after = try io.now();
         try testing.expect(
             (@as(i128, after.sec) - before.sec) * 1_000_000_000 +
@@ -46,7 +46,7 @@ test "portable io timer reuse and immediate invalid descriptor" {
         loop.executor.spawn(&timer.task);
         support.run(&loop);
 
-        try timer.result.?;
+        try timer.getResult();
 
         timer.coroutine.deinit();
 
@@ -65,7 +65,7 @@ test "portable io timer reuse and immediate invalid descriptor" {
         loop.executor.spawn(&recv.task);
         support.run(&loop);
 
-        try testing.expectError(error.BadFileDescriptor, recv.result.?);
+        try testing.expectError(error.BadFileDescriptor, recv.getResult());
 
         recv.coroutine.deinit();
 
@@ -97,7 +97,7 @@ test "portable io receive timeout success with deadline async close and EOF" {
         loop.executor.spawn(&recv.task);
         support.run(&loop);
 
-        try testing.expectError(error.Timeout, recv.result.?);
+        try testing.expectError(error.Timeout, recv.getResult());
 
         recv.coroutine.deinit();
 
@@ -123,8 +123,8 @@ test "portable io receive timeout success with deadline async close and EOF" {
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try testing.expectEqual(1, try send.result.?);
-        try testing.expectEqual(1, try recv.result.?);
+        try testing.expectEqual(1, try send.getResult());
+        try testing.expectEqual(1, try recv.getResult());
         try testing.expectEqualStrings("x", &buffer);
 
         send.coroutine.deinit();
@@ -138,7 +138,7 @@ test "portable io receive timeout success with deadline async close and EOF" {
         loop.executor.spawn(&closing.task);
         support.run(&loop);
 
-        try closing.result.?;
+        try closing.getResult();
         open[1] = false;
 
         closing.coroutine.deinit();
@@ -156,7 +156,7 @@ test "portable io receive timeout success with deadline async close and EOF" {
         loop.executor.spawn(&recv.task);
         support.run(&loop);
 
-        try testing.expectEqual(0, try recv.result.?);
+        try testing.expectEqual(0, try recv.getResult());
 
         recv.coroutine.deinit();
 
@@ -201,8 +201,8 @@ test "portable io binary TCP echo with client and server transfer loops" {
         loop.executor.spawn(&server.task);
         support.run(&loop);
 
-        try client.result.?;
-        try server.result.?;
+        try client.getResult();
+        try server.getResult();
         try testing.expectEqualSlices(u8, &expected, &sent);
         try testing.expectEqualSlices(u8, &expected, &echoed);
         try testing.expectEqual(0, client.task.outstanding_io);
@@ -292,10 +292,10 @@ test "portable io queued receives on one socket progress after delayed sends" {
         loop.executor.spawn(&sender.task);
         support.run(&loop);
 
-        try sender.result.?;
+        try sender.getResult();
         var seen: [8]bool = @splat(false);
         for (&recvs, &buffers) |*recv, *buffer| {
-            try testing.expectEqual(1, try recv.result.?);
+            try testing.expectEqual(1, try recv.getResult());
             try testing.expect(buffer[0] >= 'a' and buffer[0] <= 'h');
             const index = buffer[0] - 'a';
             try testing.expect(!seen[index]);

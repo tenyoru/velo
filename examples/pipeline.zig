@@ -127,7 +127,7 @@ pub fn main() !void {
     loop.executor.spawn(&frame.task);
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-    const results = frame.result.?;
+    const results = frame.getResult();
     try results.a;
     const sum = try results.b;
 
@@ -163,7 +163,7 @@ test "pipeline joins both results and drains cancellation" {
 
         loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-        const results = frame.result.?;
+        const results = frame.getResult();
 
         if (canceled) {
             try std.testing.expectError(error.Canceled, results.a);

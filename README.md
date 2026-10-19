@@ -65,7 +65,7 @@ pub fn main() !void {
     // A loop error cannot safely unwind storage the kernel still references.
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-    try timer.result.?;
+    try timer.getResult();
 }
 ```
 

@@ -37,7 +37,7 @@ pub fn main() !void {
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
     for (&counters) |*counter| {
-        if (counter.result.? != 5) return error.IncorrectCount;
+        if (counter.getResult() != 5) return error.IncorrectCount;
     }
 
     if (!@import("builtin").is_test) std.debug.print("PASS: both counters reached 5\n", .{});

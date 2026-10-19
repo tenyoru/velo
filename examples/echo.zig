@@ -184,8 +184,8 @@ pub fn main(init: std.process.Init) !void {
     // A fatal run error leaves live frames borrowed by the kernel; never unwind them.
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-    try stopper.result.?;
-    for (&handlers) |*frame| try frame.result.?;
+    try stopper.getResult();
+    for (&handlers) |*frame| try frame.getResult();
 }
 
 test "handler cancellation consumes queued children before closing sockets" {
@@ -221,7 +221,7 @@ test "handler cancellation consumes queued children before closing sockets" {
         frame.cancel();
         loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-        try frame.result.?;
+        try frame.getResult();
         try std.testing.expectEqual(null, frame.coroutine.fd);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }

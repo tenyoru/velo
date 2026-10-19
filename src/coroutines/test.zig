@@ -144,7 +144,7 @@ test "await a child woken from outside" {
 
     ex.run();
 
-    try std.testing.expectEqual(7, sum.result.?);
+    try std.testing.expectEqual(7, sum.getResult());
 }
 
 fn GroupProbe(comptime T: type) type {
@@ -216,8 +216,8 @@ test "join retains values and never repolls completed children" {
 
     ex.run();
 
-    try std.testing.expectEqual(7, frame.result.?.a);
-    try std.testing.expectEqual(11, frame.result.?.b);
+    try std.testing.expectEqual(7, frame.getResult().a);
+    try std.testing.expectEqual(11, frame.getResult().b);
     try std.testing.expectEqual(1, frame.coroutine.a.polls);
     try std.testing.expectEqual(3, frame.coroutine.b.polls);
     try std.testing.expectEqual(&frame.task, frame.coroutine.a.task.?);
@@ -257,9 +257,9 @@ test "nested joins retain nullable error union and void results" {
 
         ex.run();
 
-        try std.testing.expectEqual(null, frame.result.?.a.a);
-        try std.testing.expectError(error.Failed, frame.result.?.a.b);
-        try std.testing.expectEqual({}, frame.result.?.b);
+        try std.testing.expectEqual(null, frame.getResult().a.a);
+        try std.testing.expectError(error.Failed, frame.getResult().a.b);
+        try std.testing.expectEqual({}, frame.getResult().b);
         try std.testing.expectEqual(if (error_first) 3 else 1, frame.coroutine.a.a.polls);
         try std.testing.expectEqual(if (error_first) 1 else 3, frame.coroutine.a.b.polls);
         try std.testing.expectEqual(2, frame.coroutine.b.polls);
@@ -305,9 +305,9 @@ test "race keeps b winner while canceled a drains and preserves its result" {
 
     ex.run();
 
-    try std.testing.expectEqual(.b, frame.result.?.winner);
-    try std.testing.expectError(error.Canceled, frame.result.?.a);
-    try std.testing.expectEqual(42, frame.result.?.b);
+    try std.testing.expectEqual(.b, frame.getResult().winner);
+    try std.testing.expectError(error.Canceled, frame.getResult().a);
+    try std.testing.expectEqual(42, frame.getResult().b);
     try std.testing.expectEqual(5, frame.coroutine.a.polls);
     try std.testing.expectEqual(2, frame.coroutine.b.polls);
     try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
@@ -341,7 +341,7 @@ test "race breaks same poll ties in favor of a and returns both resources" {
     ex.spawn(&frame.task);
     ex.run();
 
-    const result = frame.result.?;
+    const result = frame.getResult();
 
     try std.testing.expectEqual(.a, result.winner);
     try std.testing.expectEqual(&a_closed, result.a.closed);
@@ -382,9 +382,9 @@ test "race cancellation before polling retains child results and first observed 
 
     ex.run();
 
-    try std.testing.expectEqual(.b, frame.result.?.winner);
-    try std.testing.expectError(error.Canceled, frame.result.?.a);
-    try std.testing.expectEqual(null, frame.result.?.b);
+    try std.testing.expectEqual(.b, frame.getResult().winner);
+    try std.testing.expectError(error.Canceled, frame.getResult().a);
+    try std.testing.expectEqual(null, frame.getResult().b);
     try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
     try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
     try std.testing.expectEqual(1, frame.coroutine.b.polls);
@@ -432,9 +432,9 @@ test "group cancellation wakes parked children and drains both exactly once" {
 
         ex.run();
 
-        try std.testing.expectError(error.Canceled, frame.result.?.a);
-        try std.testing.expectError(error.Canceled, frame.result.?.b);
-        if (is_race) try std.testing.expectEqual(.a, frame.result.?.winner);
+        try std.testing.expectError(error.Canceled, frame.getResult().a);
+        try std.testing.expectError(error.Canceled, frame.getResult().b);
+        if (is_race) try std.testing.expectEqual(.a, frame.getResult().winner);
         try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
         try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
@@ -465,8 +465,8 @@ test "join cancellation skips completed children" {
     frame.coroutine.cancel();
     ex.run();
 
-    try std.testing.expectEqual({}, frame.result.?.a);
-    try std.testing.expectError(error.Canceled, frame.result.?.b);
+    try std.testing.expectEqual({}, frame.getResult().a);
+    try std.testing.expectError(error.Canceled, frame.getResult().b);
     try std.testing.expectEqual(1, frame.coroutine.a.polls);
     try std.testing.expectEqual(0, frame.coroutine.a.cancel_calls);
     try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
@@ -499,8 +499,8 @@ test "frame cancellation supports children aligned above Task" {
     ex.spawn(&canceled.task);
     ex.run();
 
-    try std.testing.expectEqual(42, try success.result.?);
-    try std.testing.expectError(error.Canceled, canceled.result.?);
+    try std.testing.expectEqual(42, try success.getResult());
+    try std.testing.expectError(error.Canceled, canceled.getResult());
 
     success.cancel();
 
@@ -573,8 +573,8 @@ test "task cancellation drains joins and races of borrowed primitive waits" {
 
         ex.run();
 
-        try std.testing.expectError(error.Canceled, frame.result.?.a);
-        try std.testing.expectError(error.Canceled, frame.result.?.b);
+        try std.testing.expectError(error.Canceled, frame.getResult().a);
+        try std.testing.expectError(error.Canceled, frame.getResult().b);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
         try std.testing.expectEqual(null, ex.all_tasks.first);
     }
@@ -611,14 +611,14 @@ test "race preserves both channel resources granted before its next poll" {
     race.cancel();
     ex.run();
 
-    try a.result.?;
-    try b.result.?;
-    try std.testing.expectEqual(.a, race.result.?.winner);
-    try std.testing.expectEqual(&a_owned, try race.result.?.a);
-    try std.testing.expectEqual(&b_owned, try race.result.?.b);
+    try a.getResult();
+    try b.getResult();
+    try std.testing.expectEqual(.a, race.getResult().winner);
+    try std.testing.expectEqual(&a_owned, try race.getResult().a);
+    try std.testing.expectEqual(&b_owned, try race.getResult().b);
 
-    (try race.result.?.a).* = false;
-    (try race.result.?.b).* = false;
+    (try race.getResult().a).* = false;
+    (try race.getResult().b).* = false;
 
     try std.testing.expect(!a_owned and !b_owned);
     try std.testing.expectEqual(0, race.task.outstanding_io);

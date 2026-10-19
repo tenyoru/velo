@@ -716,7 +716,7 @@ test "iocp queued datagrams preserve zero length and drain truncation packets" {
 
             loop.executor.spawn(&send.task);
             support.run(&loop);
-            try std.testing.expectEqual(payload.len, try send.result.?);
+            try std.testing.expectEqual(payload.len, try send.getResult());
             send.coroutine.deinit();
 
             var buffer: [1]u8 = undefined;
@@ -736,9 +736,9 @@ test "iocp queued datagrams preserve zero length and drain truncation packets" {
             support.run(&loop);
 
             if (payload.len != 0) {
-                try std.testing.expectError(error.MessageTooBig, recv.result.?);
+                try std.testing.expectError(error.MessageTooBig, recv.getResult());
             } else {
-                try std.testing.expectEqual(0, try recv.result.?);
+                try std.testing.expectEqual(0, try recv.getResult());
             }
             try std.testing.expectEqual(address_len, source_len);
             try std.testing.expectEqual(address.family, source.family);
@@ -770,7 +770,7 @@ test "iocp write half-close preserves the reverse stream" {
 
     loop.executor.spawn(&recv.task);
     support.run(&loop);
-    try std.testing.expectEqual(0, try recv.result.?);
+    try std.testing.expectEqual(0, try recv.getResult());
     recv.coroutine.deinit();
 
     recv = .{
@@ -788,8 +788,8 @@ test "iocp write half-close preserves the reverse stream" {
     loop.executor.spawn(&send.task);
     support.run(&loop);
 
-    try std.testing.expectEqual(1, try send.result.?);
-    try std.testing.expectEqual(1, try recv.result.?);
+    try std.testing.expectEqual(1, try send.getResult());
+    try std.testing.expectEqual(1, try recv.getResult());
     try std.testing.expectEqualStrings("x", &buffer);
 
     send.coroutine.deinit();

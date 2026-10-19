@@ -27,6 +27,6 @@ test "ThreadGuard panics on a wake from another thread" {
     executor.spawn(&frame.task);
     executor.run();
 
-    try frame.result.?;
+    try frame.getResult();
     return error.ThreadGuardDidNotTrigger;
 }

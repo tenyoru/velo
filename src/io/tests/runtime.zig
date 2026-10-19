@@ -183,7 +183,7 @@ test "runtime external stop preserves live timer and shutdown drains task regist
         support.run(&loop);
         thread.join();
 
-        try signal.result.?;
+        try signal.getResult();
 
         signal.coroutine.timer.deinit();
 
@@ -201,8 +201,8 @@ test "runtime external stop preserves live timer and shutdown drains task regist
         loop.shutdown();
         support.run(&loop);
 
-        try testing.expectError(error.OperationCanceled, timer.result.?);
-        try testing.expectError(error.Canceled, waiter.result.?);
+        try testing.expectError(error.OperationCanceled, timer.getResult());
+        try testing.expectError(error.Canceled, waiter.getResult());
 
         timer.coroutine.child.deinit();
 
@@ -218,7 +218,7 @@ test "runtime external stop preserves live timer and shutdown drains task regist
         loop.executor.spawn(&rejected.task);
         support.run(&loop);
 
-        try testing.expectError(error.OperationCanceled, rejected.result.?);
+        try testing.expectError(error.OperationCanceled, rejected.getResult());
 
         rejected.coroutine.deinit();
 
@@ -250,7 +250,7 @@ test "runtime shutdown from the last runnable task cancels parked tasks before i
         loop.executor.spawn(&shutter.task);
         support.run(&loop);
 
-        try testing.expectError(error.Canceled, waiter.result.?);
+        try testing.expectError(error.Canceled, waiter.getResult());
         try drained(&loop);
     }
 }
@@ -419,8 +419,8 @@ test "runtime datagrams preserve IPv4 IPv6 peers empty packets and truncation er
             loop.executor.spawn(&send.task);
             support.run(&loop);
 
-            try testing.expectEqual(5, try send.result.?);
-            try testing.expectEqual(5, try receive.result.?);
+            try testing.expectEqual(5, try send.getResult());
+            try testing.expectEqual(5, try receive.getResult());
             try testing.expectEqualStrings("hello", buffer[0..5]);
             try testing.expectEqual(@sizeOf(A), peer_len);
             try testing.expectEqual(local_a.port, peer.port);
@@ -445,7 +445,7 @@ test "runtime datagrams preserve IPv4 IPv6 peers empty packets and truncation er
                 loop.executor.spawn(&send.task);
                 support.run(&loop);
 
-                try testing.expectEqual(payload.len, try send.result.?);
+                try testing.expectEqual(payload.len, try send.getResult());
 
                 send.coroutine.deinit();
 
@@ -465,9 +465,9 @@ test "runtime datagrams preserve IPv4 IPv6 peers empty packets and truncation er
                 support.run(&loop);
 
                 if (index == 2) {
-                    try testing.expectError(error.MessageTooBig, receive.result.?);
+                    try testing.expectError(error.MessageTooBig, receive.getResult());
                 } else {
-                    try testing.expectEqual(payload.len, try receive.result.?);
+                    try testing.expectEqual(payload.len, try receive.getResult());
                     try testing.expectEqualSlices(u8, payload, buffer[0..payload.len]);
                     try testing.expectEqual(local_b.port, reply_peer.port);
                     try testing.expectEqualDeep(local_b.addr, reply_peer.addr);
@@ -540,8 +540,8 @@ test "runtime pending datagram receive cancels and shutdown rejects new receives
             loop.executor.spawn(&cancel.task);
             support.run(&loop);
 
-            try cancel.result.?;
-            try testing.expectError(error.OperationCanceled, receive.result.?);
+            try cancel.getResult();
+            try testing.expectError(error.OperationCanceled, receive.getResult());
 
             receive.coroutine.deinit();
             cancel.coroutine.timer.deinit();
@@ -561,7 +561,7 @@ test "runtime pending datagram receive cancels and shutdown rejects new receives
                 loop.executor.spawn(&receive.task);
                 support.run(&loop);
 
-                try testing.expectError(error.OperationCanceled, receive.result.?);
+                try testing.expectError(error.OperationCanceled, receive.getResult());
 
                 receive.coroutine.deinit();
             }
@@ -607,7 +607,7 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try testing.expectError(error.OperationCanceled, send.result.?);
+        try testing.expectError(error.OperationCanceled, send.getResult());
 
         send = .{
             .coroutine = io.SendAll.init(&loop, .{
@@ -628,8 +628,8 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try send.result.?;
-        try read.result.?;
+        try send.getResult();
+        try read.getResult();
         try testing.expectEqual(sent.len, send.coroutine.offset);
         try testing.expectEqual(sent.len, read.coroutine.offset);
         try testing.expectEqualSlices(u8, sent, received);
@@ -648,7 +648,7 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try send.result.?;
+        try send.getResult();
 
         send.coroutine.deinit();
 
@@ -666,7 +666,7 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&read.task);
         support.run(&loop);
 
-        try testing.expectError(error.EndOfStream, read.result.?);
+        try testing.expectError(error.EndOfStream, read.getResult());
         try testing.expectEqual(3, read.coroutine.offset);
         try testing.expectEqualStrings("end", partial[0..3]);
 
@@ -691,8 +691,8 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try send.result.?;
-        try read.result.?;
+        try send.getResult();
+        try read.getResult();
         try testing.expectEqualStrings("back", partial[0..4]);
 
         send.coroutine.deinit();
@@ -709,7 +709,7 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&send.task);
         support.run(&loop);
 
-        try send.result.?;
+        try send.getResult();
 
         send.coroutine.deinit();
 
@@ -726,7 +726,7 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         loop.executor.spawn(&canceled.task);
         support.run(&loop);
 
-        try testing.expectError(error.OperationCanceled, canceled.result.?);
+        try testing.expectError(error.OperationCanceled, canceled.getResult());
         try testing.expectEqual(3, canceled.coroutine.read.offset);
         try testing.expectEqualStrings("cut", partial[0..3]);
 
