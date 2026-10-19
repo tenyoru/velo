@@ -55,8 +55,8 @@ stackful fibers), so coroutines here are explicit state machines.
   `turn`/`inflight`/`park`/`close` hooks
 - `src/io/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation
-- `src/io/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO,
-  software timers
+- `src/io/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
+  fd buckets, run queue, deadline treap
 - `src/io/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
   software timers
 - `src/io/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing

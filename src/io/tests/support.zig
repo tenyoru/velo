@@ -30,7 +30,7 @@ pub fn drained(loop: *io.Loop) !void {
         try testing.expectEqual(0, loop.outstanding_cqes);
         try testing.expectEqual(null, loop.cancellations.first);
 
-        if (loop.epoll) |*state| try testing.expectEqual(null, state.live.first);
+        if (loop.epoll) |*state| try testing.expectEqual(0, state.live);
     } else {
         try testing.expectEqual(null, loop.live.first);
     }

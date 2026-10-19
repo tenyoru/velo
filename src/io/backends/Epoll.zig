@@ -7,8 +7,13 @@ const io = @import("../root.zig");
 const assert = std.debug.assert;
 
 pub const OperationState = struct {
-    // Intrusive nodes and task pointers only guarantee native pointer alignment.
-    expires: ?i128 align(@alignOf(usize)) = null,
+    deadline: Deadlines.Node = undefined,
+    timed: bool = false,
+    // Live pollable operations of one fd bucket, newest first.
+    fd_prev: ?*io.Operation = null,
+    fd_next: ?*io.Operation = null,
+    // `io.Operation.node` is linked into `State.runnable`.
+    queued: bool = false,
     prepared: bool = false,
     waiting: bool = false,
     connecting: bool = false,
@@ -18,9 +23,28 @@ pub const OperationState = struct {
     result: ?(io.Error!usize) = null,
 };
 
+const Deadline = struct {
+    // Intrusive nodes and task pointers only guarantee native pointer alignment.
+    ns: i128 align(@alignOf(usize)),
+    // Breaks ties: the treap keeps one node per key.
+    op: usize,
+};
+
+const Deadlines = std.Treap(Deadline, struct {
+    fn order(a: Deadline, b: Deadline) std.math.Order {
+        const by_time = std.math.order(a.ns, b.ns);
+        return if (by_time == .eq) std.math.order(a.op, b.op) else by_time;
+    }
+}.order);
+
 pub const State = struct {
     fd: linux.fd_t,
-    live: std.DoublyLinkedList = .{},
+    live: usize = 0,
+    // Operations to start, cancel, or finish on the next pass, oldest first.
+    runnable: std.DoublyLinkedList = .{},
+    deadlines: Deadlines = .{},
+    // Fixed buckets avoid allocation; colliding fds increase lookup cost.
+    by_fd: [1024]?*io.Operation = @splat(null),
 };
 
 pub fn init() !State {
@@ -35,7 +59,7 @@ pub fn init() !State {
 }
 
 pub fn deinit(state: *State) void {
-    assert(state.live.first == null);
+    assert(state.live == 0 and state.runnable.first == null and state.deadlines.root == null);
     _ = linux.close(state.fd);
 }
 
@@ -44,7 +68,7 @@ pub fn turn(loop: *io.Loop, state: *State) !bool {
     try start(state);
 
     // service checks control directly; only a blocking poll needs the wake fd.
-    const woke = state.live.first != null and try events(loop, state, false);
+    const woke = state.live != 0 and try events(loop, state, false);
     try expire(state, nanoseconds(try io.now()));
     return woke;
 }
@@ -53,30 +77,39 @@ pub fn park(loop: *io.Loop, state: *State) !void {
     _ = try events(loop, state, true);
 }
 
+pub fn cancel(state: *State, op: *io.Operation) void {
+    enqueue(state, op);
+}
+
 fn activate(loop: *io.Loop, state: *State, timestamp: i128) !void {
     while (loop.pending.popFirst()) |node| {
         const op: *io.Operation = @fieldParentPtr("node", node);
 
         op.state = .inflight;
-        state.live.append(node);
+        state.live += 1;
+        if (pollable(op)) link(state, op);
 
         if (op.linked or op.data == .timeout) {
             if (op.time.sec < 0 or op.time.nsec < 0 or op.time.nsec >= 1_000_000_000) {
                 try fail(state, op, .INVAL);
                 continue;
             }
-            op.native.epoll.expires = nanoseconds(op.time) +
-                if (op.linked) @as(i128, 0) else timestamp;
+            // A zero timeout would leave the treap again in this turn's expire.
+            if (op.data == .timeout and op.time.sec == 0 and op.time.nsec == 0) {
+                op.primary = negative(.TIME);
+                try settle(state, op, 0);
+                continue;
+            }
+            schedule(state, op, nanoseconds(op.time) + if (op.linked) @as(i128, 0) else timestamp);
         }
+        if (op.data != .timeout) enqueue(state, op);
     }
 }
 
 fn start(state: *State) !void {
-    var node = state.live.first;
-
-    while (node) |current| {
-        node = current.next;
-        const op: *io.Operation = @fieldParentPtr("node", current);
+    while (state.runnable.popFirst()) |node| {
+        const op: *io.Operation = @fieldParentPtr("node", node);
+        op.native.epoll.queued = false;
 
         if (op.native.epoll.result != null) {
             try finish(state, op);
@@ -88,7 +121,7 @@ fn start(state: *State) !void {
             continue;
         }
 
-        if (op.data == .timeout or op.native.epoll.prepared or blocked(state, op)) continue;
+        if (op.data == .timeout or op.native.epoll.prepared or blocked(op)) continue;
 
         op.native.epoll.prepared = true;
         if (op.data == .connect or op.data == .accept) {
@@ -102,19 +135,49 @@ fn start(state: *State) !void {
     }
 }
 
-// O(n²) FIFO/interest scans, O(n) deadlines; use fd indexing and a timer heap at scale.
-fn blocked(state: *const State, op: *const io.Operation) bool {
-    if (op.data == .close) return false;
+/// FIFO per fd and direction: older operations sit after `op` in its bucket.
+fn blocked(op: *const io.Operation) bool {
+    if (!pollable(op)) return false;
 
-    var node = state.live.first;
-    while (node) |current| : (node = current.next) {
-        const other: *io.Operation = @fieldParentPtr("node", current);
-        if (other == op) return false;
-        if (!pollable(other)) continue;
+    var next = op.native.epoll.fd_next;
+    while (next) |other| : (next = other.native.epoll.fd_next) {
         if (socket(other) == socket(op) and direction(other) == direction(op)) return true;
     }
 
-    unreachable;
+    return false;
+}
+
+fn bucket(state: *State, fd: linux.fd_t) *?*io.Operation {
+    return &state.by_fd[@as(u32, @bitCast(fd)) % state.by_fd.len];
+}
+
+fn link(state: *State, op: *io.Operation) void {
+    const head = bucket(state, socket(op));
+    op.native.epoll.fd_prev = null;
+    op.native.epoll.fd_next = head.*;
+    if (head.*) |first| first.native.epoll.fd_prev = op;
+    head.* = op;
+}
+
+fn unlink(state: *State, op: *io.Operation) void {
+    const native = &op.native.epoll;
+    if (native.fd_prev) |prev| prev.native.epoll.fd_next = native.fd_next else bucket(state, socket(op)).* = native.fd_next;
+    if (native.fd_next) |next| next.native.epoll.fd_prev = native.fd_prev;
+    native.fd_prev = null;
+    native.fd_next = null;
+}
+
+fn enqueue(state: *State, op: *io.Operation) void {
+    if (op.native.epoll.queued) return;
+
+    op.native.epoll.queued = true;
+    state.runnable.append(&op.node);
+}
+
+fn schedule(state: *State, op: *io.Operation, expires: i128) void {
+    var entry = state.deadlines.getEntryFor(.{ .ns = expires, .op = @intFromPtr(op) });
+    entry.set(&op.native.epoll.deadline);
+    op.native.epoll.timed = true;
 }
 
 fn attempt(state: *State, op: *io.Operation) !void {
@@ -236,15 +299,14 @@ fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
     var old: u32 = 0;
     var wanted: u32 = 0;
     var owner: ?*io.Operation = null;
-    var node = state.live.first;
+    var next = bucket(state, fd).*;
 
-    while (node) |current| : (node = current.next) {
-        const op: *io.Operation = @fieldParentPtr("node", current);
-        if (!pollable(op) or socket(op) != fd) continue;
+    while (next) |op| : (next = op.native.epoll.fd_next) {
+        if (socket(op) != fd) continue;
         old |= op.native.epoll.interest;
         if (op == exclude or !op.native.epoll.waiting) continue;
         wanted |= direction(op);
-        owner = op;
+        if (owner == null) owner = op;
     }
 
     if (old != wanted) {
@@ -270,10 +332,9 @@ fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
     }
 
     // Transfer the registration only after the kernel has accepted the new mask.
-    node = state.live.first;
-    while (node) |current| : (node = current.next) {
-        const op: *io.Operation = @fieldParentPtr("node", current);
-        if (pollable(op) and socket(op) == fd) op.native.epoll.interest = 0;
+    next = bucket(state, fd).*;
+    while (next) |op| : (next = op.native.epoll.fd_next) {
+        if (socket(op) == fd) op.native.epoll.interest = 0;
     }
     if (owner) |op| op.native.epoll.interest = wanted;
 
@@ -283,15 +344,10 @@ fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
 fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
     var timeout: i32 = 0;
     if (wait) {
-        var nearest: ?i128 = null;
-        var node = state.live.first;
-
-        while (node) |current| : (node = current.next) {
-            const op: *io.Operation = @fieldParentPtr("node", current);
-            if (op.native.epoll.expires) |expires| nearest = @min(nearest orelse expires, expires);
-        }
-
-        timeout = if (nearest) |expires| milliseconds(expires - nanoseconds(try io.now())) else -1;
+        timeout = if (state.deadlines.getMin()) |nearest|
+            milliseconds(nearest.key.ns - nanoseconds(try io.now()))
+        else
+            -1;
     }
 
     var batch: [64]linux.epoll_event = undefined;
@@ -309,10 +365,9 @@ fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
             continue;
         }
 
-        var node = state.live.first;
-        while (node) |current| {
-            node = current.next;
-            const op: *io.Operation = @fieldParentPtr("node", current);
+        var next = bucket(state, event.data.fd).*;
+        while (next) |op| {
+            next = op.native.epoll.fd_next;
             if (!op.native.epoll.waiting or socket(op) != event.data.fd) continue;
             if (event.events & (direction(op) | linux.EPOLL.ERR | linux.EPOLL.HUP) != 0)
                 try attempt(state, op);
@@ -323,13 +378,9 @@ fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
 }
 
 fn expire(state: *State, timestamp: i128) !void {
-    var node = state.live.first;
-
-    while (node) |current| {
-        node = current.next;
-        const op: *io.Operation = @fieldParentPtr("node", current);
-        const expires = op.native.epoll.expires orelse continue;
-        if (expires > timestamp) continue;
+    while (state.deadlines.getMin()) |nearest| {
+        if (nearest.key.ns > timestamp) return;
+        const op: *io.Operation = @ptrFromInt(nearest.key.op);
 
         if (op.data == .timeout) {
             op.primary = negative(.TIME);
@@ -354,16 +405,41 @@ fn settle(state: *State, op: *io.Operation, result: io.Error!usize) !void {
 }
 
 fn finish(state: *State, op: *io.Operation) !void {
+    const native = &op.native.epoll;
     if (pollable(op)) {
-        if (refresh(state, socket(op), op)) |e| return mapError(e);
+        if (refresh(state, socket(op), op)) |e| {
+            // start retries the deregistration with the retained result.
+            enqueue(state, op);
+            return mapError(e);
+        }
     }
 
-    assert(op.native.epoll.interest == 0 and !op.native.epoll.waiting);
+    assert(native.interest == 0 and !native.waiting);
     if (op.linked and op.timer == null) op.timer = negative(.CANCELED);
 
-    const result = op.native.epoll.result.?;
-    op.native.epoll.result = null;
-    state.live.remove(&op.node);
+    const result = native.result.?;
+    native.result = null;
+    if (native.queued) {
+        state.runnable.remove(&op.node);
+        native.queued = false;
+    }
+    if (native.timed) {
+        var entry = state.deadlines.getEntryForExisting(&native.deadline);
+        entry.set(null);
+        native.timed = false;
+    }
+    if (pollable(op)) {
+        // The oldest newer operation on this fd and direction may start now.
+        var prev = native.fd_prev;
+        while (prev) |other| : (prev = other.native.epoll.fd_prev) {
+            if (socket(other) == socket(op) and direction(other) == direction(op)) {
+                enqueue(state, other);
+                break;
+            }
+        }
+        unlink(state, op);
+    }
+    state.live -= 1;
     op.finish(result);
 }
 
@@ -430,6 +506,58 @@ pub fn mapError(e: linux.E) io.Error {
         .MSGSIZE => error.MessageTooBig,
         else => error.OsError,
     };
+}
+
+// `activate` without a loop, for operations built by hand.
+fn track(state: *State, op: *io.Operation) void {
+    state.live += 1;
+    link(state, op);
+    enqueue(state, op);
+}
+
+test "epoll deadlines preserve equal expiry and large timestamps" {
+    const co = @import("../../coroutines/root.zig");
+
+    var state = try init();
+    defer deinit(&state);
+
+    var executor: co.Executor = .{};
+    var task: co.Task = .{
+        .executor = &executor,
+        .poll_fn = struct {
+            fn poll(_: *co.Task) bool {
+                unreachable;
+            }
+        }.poll,
+    };
+    var timers: [4]io.Operation = @splat(.{
+        .loop = undefined,
+        .data = .{ .timeout = .{ .duration = .{ .sec = 0, .nsec = 0 } } },
+        .linked = false,
+        .time = .{ .sec = 0, .nsec = 0 },
+        .state = .inflight,
+        .task = &task,
+    });
+    const distant = @as(i128, std.math.maxInt(i64)) + 7;
+    for (&timers, [_]i128{ 7, 5, 5, distant }) |*op, expires| {
+        state.live += 1;
+        schedule(&state, op, expires);
+    }
+
+    try expire(&state, 4);
+    try std.testing.expectEqual(4, state.live);
+    try expire(&state, 5);
+    try std.testing.expectEqual(2, state.live);
+    try std.testing.expectEqual(null, timers[0].completion);
+    try std.testing.expectEqual(0, try timers[1].completion.?);
+    try std.testing.expectEqual(0, try timers[2].completion.?);
+    try expire(&state, 7);
+    try std.testing.expectEqual(0, try timers[0].completion.?);
+    try expire(&state, distant - 1);
+    try std.testing.expectEqual(1, state.live);
+    try std.testing.expectEqual(null, timers[3].completion);
+    try expire(&state, distant);
+    try std.testing.expectEqual(0, try timers[3].completion.?);
 }
 
 test "epoll wait rounds deadlines up and caps long waits" {
@@ -499,12 +627,12 @@ test "epoll FIFO interest aggregation and cancellation remove idle write interes
         .task = &task,
     };
 
-    state.live.append(&first.node);
-    state.live.append(&second.node);
-    state.live.append(&send.node);
-    try std.testing.expect(!blocked(&state, &first));
-    try std.testing.expect(blocked(&state, &second));
-    try std.testing.expect(!blocked(&state, &send));
+    track(&state, &first);
+    track(&state, &second);
+    track(&state, &send);
+    try std.testing.expect(!blocked(&first));
+    try std.testing.expect(blocked(&second));
+    try std.testing.expect(!blocked(&send));
 
     try arm(&state, &first);
     try arm(&state, &send);
@@ -521,14 +649,15 @@ test "epoll FIFO interest aggregation and cancellation remove idle write interes
     try std.testing.expectEqual(@as(usize, 0), linux.epoll_wait(state.fd, &batch, batch.len, 0));
 
     try fail(&state, &first, .CANCELED);
-    try std.testing.expect(!blocked(&state, &second));
+    try std.testing.expect(!blocked(&second));
     try start(&state);
     try std.testing.expect(second.native.epoll.waiting);
 
     second.cancel_requested = true;
+    cancel(&state, &second);
     try start(&state);
     try std.testing.expectError(error.OperationCanceled, second.completion.?);
-    try std.testing.expectEqual(@as(?*std.DoublyLinkedList.Node, null), state.live.first);
+    try std.testing.expectEqual(0, state.live);
     try std.testing.expectEqual(@as(usize, 0), linux.epoll_wait(state.fd, &batch, batch.len, 0));
 }
 
@@ -571,7 +700,7 @@ test "epoll failed deregistration retains result and does not repeat receive" {
         .task = &task,
     };
 
-    state.live.append(&recv.node);
+    track(&state, &recv);
     try start(&state);
     try std.testing.expect(recv.native.epoll.waiting);
     try std.testing.expectEqual(

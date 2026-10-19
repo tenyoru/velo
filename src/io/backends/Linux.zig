@@ -156,7 +156,7 @@ fn close(loop: *Loop) void {
 }
 
 pub fn cancel(loop: *Loop, op: *Operation) void {
-    if (loop.epoll != null) return;
+    if (loop.epoll) |*state| return Epoll.cancel(state, op);
 
     assert(!op.native.cancel_pending and !op.native.cancel_submitted);
     op.native.cancel_pending = true;
@@ -180,7 +180,7 @@ fn turn(loop: *Loop) !bool {
 }
 
 fn inflight(loop: *const Loop) bool {
-    if (loop.epoll) |*state| return state.live.first != null;
+    if (loop.epoll) |*state| return state.live != 0;
     return loop.outstanding_cqes > 0;
 }
 
