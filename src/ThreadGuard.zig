@@ -1,3 +1,6 @@
+//! Test-only executor ownership check: panics if a thread enters while
+//! another thread is inside. Re-entry on the owning thread is allowed.
+
 const std = @import("std");
 const builtin = @import("builtin");
 
