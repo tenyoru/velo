@@ -11,6 +11,7 @@ const Executor = @This();
 thread_guard: ThreadGuard = .{},
 ready: std.DoublyLinkedList = .{},
 all_tasks: std.DoublyLinkedList = .{},
+cancel_next: ?*std.DoublyLinkedList.Node = null,
 
 /// Type-erased coroutine handle borrowed by wakers.
 pub const Task = struct {
@@ -63,6 +64,7 @@ pub fn spawn(ex: *Executor, task: *Task) void {
 
     task.executor = ex;
     ex.all_tasks.append(&task.all_node);
+    if (ex.cancel_next == null) ex.cancel_next = &task.all_node;
     task.registered = true;
     task.wake();
 }
@@ -72,15 +74,12 @@ pub fn cancelAll(ex: *Executor) void {
     const entered = if (ThreadGuard.enabled) ex.thread_guard.enter() else false;
     defer if (ThreadGuard.enabled) ex.thread_guard.leave(entered);
 
-    var next = ex.all_tasks.first;
-
-    while (next) |node| {
+    // Persist progress and advance before callbacks can append or reenter.
+    while (ex.cancel_next) |node| {
+        ex.cancel_next = node.next;
         const task: *Task = @alignCast(@fieldParentPtr("all_node", node));
 
         task.cancel();
-
-        // Read after the callback so tasks it spawns are canceled too; only runOne unlinks.
-        next = node.next;
     }
 }
 
@@ -107,6 +106,7 @@ pub fn runOne(ex: *Executor) bool {
         if (task.state == .scheduled) ex.ready.remove(&task.node);
 
         if (task.registered) {
+            if (ex.cancel_next == &task.all_node) ex.cancel_next = task.all_node.next;
             ex.all_tasks.remove(&task.all_node);
             task.registered = false;
         }
@@ -232,7 +232,58 @@ test "pre-spawn cancellation and manually assigned executor do not corrupt regis
     try std.testing.expectEqual(null, ex.all_tasks.first);
 }
 
-test "cancelAll reaches a task spawned by the last cancel callback" {
+test "cancelAll skips completed tasks and accepts new work after exhausted passes" {
+    const Probe = struct {
+        finish: bool = false,
+        cancel_calls: usize = 0,
+
+        pub fn poll(self: *@This(), _: *Task) coroutines.Poll(void) {
+            return if (self.finish) .{ .ready = {} } else .pending;
+        }
+
+        pub fn cancel(self: *@This()) void {
+            self.cancel_calls += 1;
+        }
+    };
+
+    var ex: Executor = .{};
+    var frames: [4]coroutines.Frame(Probe) = @splat(.{ .coroutine = .{} });
+    frames[0].coroutine.finish = true;
+    frames[2].coroutine.finish = true;
+
+    ex.spawn(&frames[0].task);
+    ex.spawn(&frames[1].task);
+    ex.run();
+    ex.cancelAll();
+    ex.cancelAll();
+
+    try std.testing.expectEqual(0, frames[0].coroutine.cancel_calls);
+    try std.testing.expectEqual(1, frames[1].coroutine.cancel_calls);
+    try std.testing.expect(frames[1].task.registered);
+
+    ex.spawn(&frames[2].task);
+    ex.run();
+    try std.testing.expect(frames[2].result != null);
+    try std.testing.expectEqual(0, frames[2].coroutine.cancel_calls);
+
+    ex.spawn(&frames[3].task);
+    try std.testing.expect(!frames[3].task.cancel_requested);
+    ex.cancelAll();
+    ex.cancelAll();
+
+    try std.testing.expectEqual(1, frames[1].coroutine.cancel_calls);
+    try std.testing.expectEqual(1, frames[3].coroutine.cancel_calls);
+    for ([_]usize{ 1, 3 }) |i| {
+        try std.testing.expect(frames[i].task.registered);
+        frames[i].coroutine.finish = true;
+        frames[i].task.wake();
+    }
+    ex.run();
+
+    try std.testing.expectEqual(null, ex.all_tasks.first);
+}
+
+test "nested cancelAll reaches a task spawned by the last cancel callback" {
     const Spawner = struct {
         var ex: Executor = .{};
         var child: Task = .{ .poll_fn = poll };
@@ -244,14 +295,23 @@ test "cancelAll reaches a task spawned by the last cancel callback" {
         fn spawnChild(_: *Task) void {
             ex.spawn(&child);
         }
+
+        fn cancelNested(_: *Task) void {
+            ex.cancelAll();
+        }
     };
 
+    var first: Task = .{ .poll_fn = Spawner.poll, .cancel_fn = Spawner.cancelNested };
     var parent: Task = .{ .poll_fn = Spawner.poll, .cancel_fn = Spawner.spawnChild };
 
+    Spawner.ex.spawn(&first);
     Spawner.ex.spawn(&parent);
     Spawner.ex.cancelAll();
 
-    try std.testing.expect(Spawner.child.cancel_requested);
+    for ([_]*Task{ &first, &parent, &Spawner.child }) |task| {
+        try std.testing.expect(task.cancel_requested);
+        try std.testing.expect(task.registered);
+    }
 
     Spawner.ex.run();
 

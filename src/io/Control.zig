@@ -15,6 +15,7 @@ stop_requested: std.atomic.Value(bool) = .init(false),
 shutdown_requested: std.atomic.Value(bool) = .init(false),
 signal: *const fn (*Control) void,
 registrations: std.DoublyLinkedList = .{},
+cancel_next: ?*std.DoublyLinkedList.Node = null,
 
 pub const Post = struct {
     callback: *const fn (*Post) void,
@@ -97,11 +98,13 @@ pub fn register(control: *Control, registration: *Registration) void {
 
     registration.registered = true;
     control.registrations.append(&registration.node);
+    if (control.cancel_next == null) control.cancel_next = &registration.node;
 }
 
 pub fn unregister(control: *Control, registration: *Registration) void {
     std.debug.assert(registration.registered);
 
+    if (control.cancel_next == &registration.node) control.cancel_next = registration.node.next;
     control.registrations.remove(&registration.node);
     registration.registered = false;
 }
@@ -128,9 +131,9 @@ pub fn service(control: *Control, executor: *Executor) bool {
     if (control.isShuttingDown()) {
         executor.cancelAll();
 
-        var node = control.registrations.first;
-        while (node) |current| {
-            node = current.next;
+        // Persist progress and advance before callbacks can append or unregister.
+        while (control.cancel_next) |current| {
+            control.cancel_next = current.next;
             const registration: *Registration = @fieldParentPtr("node", current);
             registration.cancel(registration);
         }
@@ -141,4 +144,61 @@ pub fn service(control: *Control, executor: *Executor) bool {
 
 pub fn deinit(control: *const Control) void {
     std.debug.assert(!control.hasWork() and control.registrations.first == null);
+}
+
+test "shutdown cancellation tolerates registry changes and only visits new admissions" {
+    const Probe = struct {
+        control: *Control,
+        registration: Registration = .{ .cancel = cancel },
+        cancel_calls: usize = 0,
+        remove_next: ?*@This() = null,
+        append: ?*@This() = null,
+
+        fn signal(_: *Control) void {}
+
+        fn cancel(registration: *Registration) void {
+            const self: *@This() = @fieldParentPtr("registration", registration);
+            self.cancel_calls += 1;
+            if (self.remove_next) |next| {
+                self.remove_next = null;
+                self.control.unregister(&next.registration);
+            }
+            if (self.append) |next| {
+                self.append = null;
+                self.control.register(&next.registration);
+            }
+        }
+    };
+
+    var executor: Executor = .{};
+    var control: Control = .{ .signal = Probe.signal };
+    var probes: [5]Probe = @splat(.{ .control = &control });
+    probes[0].remove_next = &probes[1];
+    probes[2].append = &probes[3];
+    for (probes[0..3]) |*probe| control.register(&probe.registration);
+
+    control.shutdown();
+    try std.testing.expect(!control.service(&executor));
+    try std.testing.expect(!control.service(&executor));
+
+    for ([_]usize{ 1, 0, 1, 1, 0 }, &probes) |expected, *probe| {
+        try std.testing.expectEqual(expected, probe.cancel_calls);
+    }
+    try std.testing.expect(!probes[1].registration.registered);
+    try std.testing.expectEqual(3, control.registrations.len());
+
+    control.register(&probes[4].registration);
+    control.register(&probes[1].registration);
+    try std.testing.expect(!control.service(&executor));
+    try std.testing.expect(!control.service(&executor));
+    for (&probes) |*probe| try std.testing.expectEqual(1, probe.cancel_calls);
+
+    control.unregister(&probes[4].registration);
+    control.register(&probes[4].registration);
+    try std.testing.expect(!control.service(&executor));
+    try std.testing.expectEqual(2, probes[4].cancel_calls);
+    for (probes[0..4]) |*probe| try std.testing.expectEqual(1, probe.cancel_calls);
+
+    for (&probes) |*probe| control.unregister(&probe.registration);
+    control.deinit();
 }

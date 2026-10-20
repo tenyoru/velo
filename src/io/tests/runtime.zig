@@ -255,6 +255,66 @@ test "runtime shutdown from the last runnable task cancels parked tasks before i
     }
 }
 
+test "runtime shutdown resumes cancellation for tasks spawned by later posts" {
+    const Driver = struct {
+        loop: *io.Loop,
+        waiters: *[2]co.Frame(co.Event.Wait),
+        post: io.Control.Post = .{ .callback = callback },
+        task: ?*co.Task = null,
+        posted: bool = false,
+        calls: usize = 0,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            self.task = task;
+            if (self.calls == self.waiters.len) return .{ .ready = {} };
+            if (task.cancel_requested and !self.posted) {
+                self.posted = true;
+                self.loop.post(&self.post);
+                self.loop.stop();
+            }
+            return .pending;
+        }
+
+        fn callback(post: *io.Control.Post) void {
+            const self: *@This() = @fieldParentPtr("post", post);
+            self.loop.executor.spawn(&self.waiters[self.calls].task);
+            self.calls += 1;
+            if (self.calls < self.waiters.len) {
+                self.loop.post(&self.post);
+            } else {
+                self.task.?.wake();
+            }
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+        var event: co.Event = .{};
+        defer event.deinit();
+        var waiters: [2]co.Frame(co.Event.Wait) = @splat(.{ .coroutine = event.wait() });
+        var driver: co.Frame(Driver) = .{ .coroutine = .{ .loop = &loop, .waiters = &waiters } };
+
+        loop.executor.spawn(&driver.task);
+        loop.executor.run();
+        loop.shutdown();
+        support.run(&loop);
+
+        try testing.expectEqual(1, driver.coroutine.calls);
+        try testing.expect(driver.result == null and waiters[0].result == null);
+        try testing.expect(waiters[0].task.cancel_requested);
+        try testing.expect(waiters[0].task.registered and driver.task.registered);
+        try testing.expect(!waiters[1].task.registered);
+
+        support.run(&loop);
+
+        driver.getResult();
+        try testing.expectEqual(2, driver.coroutine.calls);
+        for (&waiters) |*waiter| try testing.expectError(error.Canceled, waiter.getResult());
+        try drained(&loop);
+    }
+}
+
 test "runtime retained idle loop wakes for a post and exits after external release" {
     const Driver = struct {
         loop: *io.Loop,
