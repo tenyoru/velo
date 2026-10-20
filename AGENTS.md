@@ -25,7 +25,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just test`: `zig build test --summary all`
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
-- `zig build run-<counters|wakeup|echo|files|pipeline> [-- args]`: run an example
+- `zig build run-<counters|wakeup|echo|files|pipeline|flusher> [-- args]`: run an example
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
   in Debug/ReleaseSafe
 - Release: bump `.version` in `build.zig.zon`, commit, push tag `v<version>`;
@@ -76,12 +76,14 @@ stackful fibers), so coroutines here are explicit state machines.
   stream-helper tests
 - `src/io/tests/worker_pool.zig`, `fs.zig`: worker pool and file-operation tests
 
-- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`; all except
+- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`; all except
   files carry tests
 - `examples/counters.zig`: two independent counters print alternating steps by
   requeueing themselves, without timers or delays
 - `examples/wakeup.zig`: cross-thread post/stop/resume example; tests use automatic
   selection and forced epoll on Linux
+- `examples/flusher.zig`: synchronized deadline mailbox, generation snapshots,
+  timer rearm and graceful/canceled worker drain
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in
   `build.zig`, run by hand
 

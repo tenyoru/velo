@@ -5,7 +5,7 @@ machines: nothing switches stacks.
 
 - **Coroutines:** executor, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
-- **Threads:** cross-thread posts into a loop; a bounded `WorkerPool` for blocking work
+- **Threads:** cross-thread posts into a loop; fixed-size `WorkerPool` for blocking work
 - **Files:** positional reads, writes, and sync on the worker pool
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
@@ -88,7 +88,11 @@ zig build run-wakeup                   # cross-thread post, stop, and resume
 zig build run-pipeline                 # Channel and Join over a bounded buffer
 zig build run-echo                     # TCP echo server; press Enter to stop
 zig build run-files -- /tmp/velo-demo  # pooled create, write, sync, and read
+zig build run-flusher                  # coalesced deadlines and graceful worker drain
 ```
+
+`flusher` closes admission and finishes pending generations before global shutdown;
+shutdown alone may skip queued worker jobs.
 
 ## Development
 

@@ -64,7 +64,9 @@ jobs:
       - run: zig build test -Doptimize=ReleaseSafe --summary all
 
       - name: ThreadSanitizer
-        run: zig test src/root.zig -fllvm -fsanitize-thread -lc -j2
+        run: |
+          zig test src/root.zig -fllvm -fsanitize-thread -lc -j2
+          zig test -fllvm -fsanitize-thread -lc -j2 --dep velo -Mroot=examples/flusher.zig -fsanitize-thread -Mvelo=src/root.zig
 
       - name: Link tests and examples for foreign targets
         run: |
