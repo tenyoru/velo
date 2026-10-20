@@ -7,6 +7,10 @@
 //! Close after all I/O on that socket. Operations first polled by a canceled task or
 //! during shutdown fail with OperationCanceled unsubmitted; use closeSocket in cleanup.
 //!
+//! Run errors retain work for retry, not automatic cancellation or cleanup.
+//! Shutdown: request shutdown(), then drive run() until drained. If a persistent
+//! backend failure prevents draining, abort rather than unwind borrowed storage.
+//!
 //! Deadlines are absolute in io.now()'s clock; Timeout durations start on activation.
 //! Recv returning zero means EOF; RecvFrom returning zero is an empty datagram.
 //! Streams may transfer short counts; oversized datagrams fail with MessageTooBig.
