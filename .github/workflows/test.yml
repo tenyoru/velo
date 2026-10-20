@@ -63,6 +63,9 @@ jobs:
 
       - run: zig build test -Doptimize=ReleaseSafe --summary all
 
+      - name: ThreadSanitizer
+        run: zig test src/root.zig -fllvm -fsanitize-thread -lc -j2
+
       - name: Link tests and examples for foreign targets
         run: |
           for target in x86_64-macos aarch64-macos x86_64-windows aarch64-windows aarch64-linux; do
