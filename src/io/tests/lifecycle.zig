@@ -39,7 +39,7 @@ fn cancelUnsubmitted(operation: anytype, queued: bool) !void {
     frame.coroutine.cancel();
     frame.coroutine.cancel();
 
-    try testing.expectError(error.OperationCanceled, frame.coroutine.poll(&frame.task).ready);
+    try testing.expectError(error.OperationCanceled, frame.getResult());
     try testing.expectEqual(0, frame.task.outstanding_io);
     try support.drained(loop);
 }
@@ -218,8 +218,8 @@ test "lifecycle join waits for both real timers and completed cancellation is a 
 
         try testing.expect(!joined.coroutine.a.operation.cancel_requested);
         try testing.expect(!joined.coroutine.b.operation.cancel_requested);
-        try joined.coroutine.a.poll(&joined.task).ready;
-        try joined.coroutine.b.poll(&joined.task).ready;
+        try joined.getResult().a;
+        try joined.getResult().b;
         try testing.expectEqual(0, joined.task.outstanding_io);
         try support.drained(&loop);
     }

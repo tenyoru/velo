@@ -1,9 +1,13 @@
 //! Stackless state machines: `pub fn poll(self: *Self, task: *Task) Poll(T)`.
 //! Keep suspended state/children in fields; arrange `task.wake()` before returning `.pending`.
-//! Cancellation is cooperative: `Frame.cancel()` calls optional `cancel()` and wakes;
-//! keep polling to ready before freeing borrowed storage.
-//! Event/semaphore/channel waits are single-shot. Pin primitives, waiters and channel
-//! storage until ready is consumed. Granted permits/values win cancellation; clean them up.
+//! Polling is single-shot unless explicitly documented reusable; never poll after `.ready`,
+//! including an error result. `Frame.getResult()` remains repeatable.
+//! `cancel()` must be idempotent and valid before polling. Cancellation is cooperative:
+//! `Frame.cancel()` calls optional `cancel()` and wakes; drain to ready before freeing borrows.
+//! Custom wake sources must unregister before task completion and count their borrows in
+//! `task.outstanding_io` until ready is consumed, including completed, unconsumed results.
+//! Pin primitives, waiters and channel storage until ready is consumed.
+//! Granted permits/values win cancellation; clean them up.
 //! Primitives are single-threaded; cross-thread producers use `loop.control.post`.
 
 const std = @import("std");
@@ -91,6 +95,7 @@ pub fn Join(comptime A: type, comptime B: type) type {
         pub const Result = struct { a: AT, b: BT };
 
         pub fn poll(self: *Self, task: *Task) Poll(Result) {
+            assert(self.a_result == .pending or self.b_result == .pending);
             self.task = task;
 
             if (self.a_result == .pending) self.a_result = self.a.poll(task);
@@ -119,7 +124,8 @@ pub fn Join(comptime A: type, comptime B: type) type {
     };
 }
 
-/// First observed ready wins; same-poll ties go to `a`. Polls both before canceling.
+/// First observed ready (success or error) wins; same-poll ties go to `a`.
+/// Polls both before canceling.
 /// Uses `Join`'s pinning/cancellation contract; cancel and drain the unfinished loser.
 /// Returns both results unchanged; caller must clean up successful losing resources.
 pub fn Race(comptime A: type, comptime B: type) type {
@@ -140,6 +146,7 @@ pub fn Race(comptime A: type, comptime B: type) type {
         pub const Result = struct { winner: Winner, a: AT, b: BT };
 
         pub fn poll(self: *Self, task: *Task) Poll(Result) {
+            assert(self.a_result == .pending or self.b_result == .pending);
             self.task = task;
 
             if (self.a_result == .pending) {

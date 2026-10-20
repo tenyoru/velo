@@ -67,7 +67,7 @@ fn Transfer(comptime sending: bool) type {
         }
 
         pub fn poll(self: *Self, task: *co.Task) co.Poll(Error!void) {
-            if (self.result) |result| return .{ .ready = result };
+            assert(self.result == null);
 
             const entered = if (ThreadGuard.enabled)
                 self.loop.executor.thread_guard.enter()

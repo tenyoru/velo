@@ -102,7 +102,7 @@ pub fn pair(loop: *io.Loop, comptime family: io.AddressFamily) ![2]io.Socket {
     accept.coroutine.cancel();
     accept.coroutine.cancel();
 
-    try testing.expectEqual(server, try accept.coroutine.poll(&accept.task).ready);
+    try testing.expectEqual(server, try accept.getResult());
     try testing.expect(!accept.coroutine.operation.cancel_requested);
     try testing.expect(server != client and server != listener);
     try testing.expectEqual(0, accept.task.outstanding_io);

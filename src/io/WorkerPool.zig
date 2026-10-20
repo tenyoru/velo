@@ -222,7 +222,7 @@ pub fn Work(comptime C: type) type {
                     pool.outstanding -= 1;
                     job.state = .done;
                 },
-                .done => assert(job.task == task),
+                .done => unreachable,
             }
 
             return .{ .ready = self.result };

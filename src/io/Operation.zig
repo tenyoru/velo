@@ -160,7 +160,7 @@ pub fn Coroutine(comptime kind: Kind) type {
                     op.loop.control.unregister(&op.registration);
                     op.state = .done;
                 },
-                .done => assert(op.task == task),
+                .done => unreachable,
             }
 
             const n = op.completion.? catch |err| return .{ .ready = err };
