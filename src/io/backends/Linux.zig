@@ -158,9 +158,10 @@ fn close(loop: *Loop) void {
 pub fn cancel(loop: *Loop, op: *Operation) void {
     if (loop.epoll) |*state| return Epoll.cancel(state, op);
 
-    assert(!op.native.cancel_pending and !op.native.cancel_submitted);
-    op.native.cancel_pending = true;
-    loop.cancellations.append(&op.native.cancel_node);
+    assert(!op.native.uring.cancel_pending and !op.native.uring.cancel_submitted);
+    op.native.uring.cancel_pending = true;
+    // Inflight operations have already left pending, so cancellation can reuse their node.
+    loop.cancellations.append(&op.node);
 }
 
 fn turn(loop: *Loop) !bool {
@@ -233,15 +234,14 @@ fn prepare(loop: *Loop) void {
 
     while (loop.cancellations.first) |node| {
         const sqe = loop.ring.get_sqe() catch break;
-        const native: *Uring.OperationState = @fieldParentPtr("cancel_node", node);
-        const op: *Operation = @fieldParentPtr("native", native);
+        const op: *Operation = @fieldParentPtr("node", node);
 
         sqe.prep_cancel(@intFromPtr(op), 0);
         sqe.user_data = @intFromPtr(op) | 2;
 
         loop.cancellations.remove(node);
-        native.cancel_pending = false;
-        native.cancel_submitted = true;
+        op.native.uring.cancel_pending = false;
+        op.native.uring.cancel_submitted = true;
         loop.outstanding_cqes += 1;
     }
 

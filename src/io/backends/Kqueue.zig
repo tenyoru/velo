@@ -11,6 +11,8 @@ const assert = std.debug.assert;
 pub const NativeError = c.E;
 
 pub const OperationState = struct {
+    pub const init: OperationState = .{};
+
     // Intrusive nodes and Task pointers only guarantee native pointer alignment.
     expires: ?i128 align(@alignOf(usize)) = null,
     prepared: bool = false,

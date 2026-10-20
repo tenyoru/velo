@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const assert = std.debug.assert;
 
@@ -29,7 +30,7 @@ primary: ?i32 = null,
 timer: ?i32 = null,
 completion: ?(Error!usize) = null,
 cancel_requested: bool = false,
-native: backend.OperationState = .{},
+native: backend.OperationState = .init,
 registration: Control.Registration = .{ .cancel = cancelRegistered },
 
 pub const Kind = enum { connect, accept, send, recv, sendto, recvfrom, close, timeout };
@@ -104,6 +105,10 @@ pub fn Coroutine(comptime kind: Kind) type {
                         .sec = 0,
                         .nsec = 0,
                     },
+                    .native = if (builtin.os.tag == .linux)
+                        (if (loop.epoll != null) .{ .epoll = .{} } else .{ .uring = .{} })
+                    else
+                        .init,
                 },
             };
         }

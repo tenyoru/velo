@@ -5,14 +5,17 @@ const assert = std.debug.assert;
 
 pub const Loop = @import("Linux.zig");
 
-pub const OperationState = struct {
-    epoll: @import("Epoll.zig").OperationState = .{},
-    cancel_node: std.DoublyLinkedList.Node = .{},
-    cancel_pending: bool = false,
-    cancel_submitted: bool = false,
-    cancel_result: ?i32 = null,
-    message: linux.msghdr = undefined,
-    vector: std.posix.iovec = undefined,
+pub const OperationState = union {
+    uring: struct {
+        cancel_pending: bool = false,
+        cancel_submitted: bool = false,
+        cancel_result: ?i32 = null,
+        message: linux.msghdr = undefined,
+        vector: std.posix.iovec = undefined,
+    },
+    epoll: @import("Epoll.zig").OperationState,
+
+    pub const init: OperationState = .{ .uring = .{} };
 };
 
 pub const NativeError = linux.E;
@@ -78,12 +81,11 @@ pub fn shutdownSocket(fd: io.Socket, how: io.ShutdownHow) io.Error!void {
     if (e != .SUCCESS) return mapError(e);
 }
 
-pub fn datagram(op: *io.Operation) *linux.msghdr {
-    const native = &op.native;
-    native.message = .{
+pub fn datagram(op: *const io.Operation, message: *linux.msghdr, vector: *std.posix.iovec) *linux.msghdr {
+    message.* = .{
         .name = null,
         .namelen = 0,
-        .iov = @ptrCast(&native.vector),
+        .iov = @ptrCast(vector),
         .iovlen = 1,
         .control = null,
         .controllen = 0,
@@ -92,19 +94,19 @@ pub fn datagram(op: *io.Operation) *linux.msghdr {
 
     switch (op.data) {
         .sendto => |v| {
-            native.vector = .{ .base = @constCast(v.buffer.ptr), .len = v.buffer.len };
-            native.message.name = @constCast(v.address);
-            native.message.namelen = v.address_len;
+            vector.* = .{ .base = @constCast(v.buffer.ptr), .len = v.buffer.len };
+            message.name = @constCast(v.address);
+            message.namelen = v.address_len;
         },
         .recvfrom => |v| {
-            native.vector = .{ .base = v.buffer.ptr, .len = v.buffer.len };
-            native.message.name = v.address;
-            native.message.namelen = v.address_len.*;
+            vector.* = .{ .base = v.buffer.ptr, .len = v.buffer.len };
+            message.name = v.address;
+            message.namelen = v.address_len.*;
         },
         else => unreachable,
     }
 
-    return &native.message;
+    return message;
 }
 
 pub fn bind(fd: io.Socket, address: *const io.SockAddr, len: io.SockLen) io.Error!void {
@@ -128,6 +130,7 @@ pub fn closeSocket(fd: io.Socket) io.Error!void {
 }
 
 pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_uring_sqe) void {
+    const native = &op.native.uring;
     switch (op.data) {
         .connect => |v| sqe.prep_connect(v.fd, v.address, v.address_len),
         .accept => |v| sqe.prep_accept(v.fd, null, null, linux.SOCK.CLOEXEC),
@@ -137,8 +140,8 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
             linux.MSG.NOSIGNAL,
         ),
         .recv => |v| sqe.prep_recv(v.fd, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], 0),
-        .sendto => |v| sqe.prep_sendmsg(v.fd, @ptrCast(datagram(op)), linux.MSG.NOSIGNAL),
-        .recvfrom => |v| sqe.prep_recvmsg(v.fd, datagram(op), 0),
+        .sendto => |v| sqe.prep_sendmsg(v.fd, @ptrCast(datagram(op, &native.message, &native.vector)), linux.MSG.NOSIGNAL),
+        .recvfrom => |v| sqe.prep_recvmsg(v.fd, datagram(op, &native.message, &native.vector), 0),
         .close => |v| sqe.prep_close(v.fd),
         .timeout => sqe.prep_timeout(&op.time, 0, 0),
     }
@@ -166,17 +169,17 @@ pub fn complete(op: *io.Operation, is_timer: bool, res: i32) void {
         assert(op.primary == null);
         op.primary = res;
         if (op.data == .recvfrom and res >= 0)
-            op.data.recvfrom.address_len.* = op.native.message.namelen;
+            op.data.recvfrom.address_len.* = op.native.uring.message.namelen;
     }
 
     finishIfReady(op);
 }
 
 pub fn cancelComplete(op: *io.Operation, res: i32) void {
-    assert(op.state == .inflight and op.native.cancel_submitted);
-    assert(op.native.cancel_result == null);
+    assert(op.state == .inflight and op.native.uring.cancel_submitted);
+    assert(op.native.uring.cancel_result == null);
 
-    op.native.cancel_result = res;
+    op.native.uring.cancel_result = res;
     finishIfReady(op);
 }
 
@@ -184,8 +187,8 @@ fn finishIfReady(op: *io.Operation) void {
     if (op.primary == null or (op.linked and op.timer == null)) return;
 
     // A cancellation CQE also carries this operation's address.
-    if (op.native.cancel_pending or
-        (op.native.cancel_submitted and op.native.cancel_result == null)) return;
+    if (op.native.uring.cancel_pending or
+        (op.native.uring.cancel_submitted and op.native.uring.cancel_result == null)) return;
 
     op.finish(result(op));
 }
@@ -193,7 +196,7 @@ fn finishIfReady(op: *io.Operation) void {
 fn result(op: *const io.Operation) io.Error!usize {
     const p = op.primary.?;
     if (p >= 0) {
-        if (op.data == .recvfrom and op.native.message.flags & linux.MSG.TRUNC != 0)
+        if (op.data == .recvfrom and op.native.uring.message.flags & linux.MSG.TRUNC != 0)
             return error.MessageTooBig;
 
         return @intCast(p);

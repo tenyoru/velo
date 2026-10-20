@@ -602,7 +602,7 @@ test "io cancellation retains operation through all three CQE orders" {
         var primary: linux.io_uring_sqe = undefined;
         var timer: linux.io_uring_sqe = undefined;
         op.operation.prepare(&primary, &timer);
-        op.operation.native.cancel_submitted = true;
+        op.operation.native.uring.cancel_submitted = true;
 
         for (order, 0..) |tag, index| {
             switch (tag) {

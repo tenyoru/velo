@@ -12,6 +12,8 @@ const assert = std.debug.assert;
 pub const NativeError = u32;
 
 pub const OperationState = struct {
+    pub const init: OperationState = .{};
+
     overlapped: w.OVERLAPPED = .{},
     buffer: w.WSABUF = .{ .len = 0, .buf = undefined },
     flags: u32 = 0,
