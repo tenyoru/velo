@@ -528,3 +528,189 @@ test "channel rendezvous supports either arrival order and close wakes empty rec
         try std.testing.expectError(error.Closed, immediate.getResult());
     }
 }
+
+test "channel deterministic action model conserves FIFO ownership" {
+    const Ch = Channel(usize);
+    const Probe = struct {
+        op: union(enum) { send: Ch.Send, recv: Ch.Recv },
+        id: usize,
+        trace: *usize,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(Ch.Error!usize) {
+            self.trace.* = self.id;
+            return switch (self.op) {
+                .recv => |*op| op.poll(task),
+                .send => |*op| switch (op.poll(task)) {
+                    .pending => .pending,
+                    .ready => |result| .{ .ready = if (result) |_| self.id else |err| err },
+                },
+            };
+        }
+
+        pub fn cancel(self: *@This()) void {
+            switch (self.op) {
+                inline else => |*op| op.cancel(),
+            }
+        }
+    };
+    const Model = struct {
+        const Entry = struct {
+            send: bool,
+            ticket: ?usize = null,
+            outcome: ?Ch.Error!usize = null,
+            started: bool = false,
+            done: bool = false,
+        };
+        ex: co.Executor = .{},
+        channel: Ch,
+        frames: [68]co.Frame(Probe) = undefined,
+        entries: [68]Entry = undefined,
+        claimed: [68]bool = @splat(false),
+        values: [3]usize = undefined,
+        buffered: usize = 0,
+        count: usize = 0,
+        clock: usize = 0,
+        trace: usize = 0,
+        closed: bool = false,
+
+        fn spawn(self: *@This(), send: bool) void {
+            const id = self.count;
+            self.count += 1;
+            self.entries[id] = .{ .send = send };
+            self.frames[id] = .{ .coroutine = .{
+                .op = if (send) .{ .send = self.channel.send(id) } else .{ .recv = self.channel.recv() },
+                .id = id,
+                .trace = &self.trace,
+            } };
+            self.ex.spawn(&self.frames[id].task);
+        }
+
+        fn oldest(self: *@This(), send: bool) ?usize {
+            var first: ?usize = null;
+            for (self.entries[0..self.count], 0..) |entry, id| {
+                if (entry.send != send or entry.ticket == null or entry.outcome != null) continue;
+                if (first == null or entry.ticket.? < self.entries[first.?].ticket.?) first = id;
+            }
+            return first;
+        }
+
+        fn settle(self: *@This()) void {
+            while (true) {
+                const recv = self.oldest(false);
+                const send = self.oldest(true);
+                if (recv != null and self.buffered > 0) {
+                    self.entries[recv.?].outcome = self.values[0];
+                    self.buffered -= 1;
+                    std.mem.copyForwards(usize, self.values[0..self.buffered], self.values[1..][0..self.buffered]);
+                } else if (recv != null and send != null) {
+                    self.entries[recv.?].outcome = send.?;
+                    self.entries[send.?].outcome = send.?;
+                } else if (send != null and self.buffered < self.channel.buffer.len) {
+                    self.values[self.buffered] = send.?;
+                    self.buffered += 1;
+                    self.entries[send.?].outcome = send.?;
+                } else break;
+            }
+        }
+
+        fn cancel(self: *@This(), id: usize) void {
+            if (self.entries[id].outcome == null) self.entries[id].outcome = error.Canceled;
+            self.frames[id].cancel();
+        }
+
+        fn close(self: *@This()) void {
+            self.closed = true;
+            for (self.entries[0..self.count]) |*entry| {
+                if (entry.started and entry.outcome == null) entry.outcome = error.Closed;
+            }
+            self.channel.close();
+        }
+
+        fn runOne(self: *@This()) !void {
+            if (!self.ex.runOne()) return;
+            const id = self.trace;
+            const entry = &self.entries[id];
+            if (!entry.started) {
+                entry.started = true;
+                if (entry.outcome == null) {
+                    entry.ticket = self.clock;
+                    self.clock += 1;
+                    if (self.closed and (entry.send or self.buffered == 0)) entry.outcome = error.Closed;
+                    self.settle();
+                }
+            }
+            if (entry.outcome) |expected| {
+                entry.done = true;
+                try std.testing.expect(self.frames[id].result != null);
+                const actual = self.frames[id].getResult();
+                if (expected) |value| {
+                    try std.testing.expectEqual(value, try actual);
+                    if (!entry.send) {
+                        try std.testing.expect(!self.claimed[value]);
+                        self.claimed[value] = true;
+                    }
+                } else |err| {
+                    try std.testing.expectError(err, actual);
+                    if (entry.send) {
+                        try std.testing.expectEqual(id, self.frames[id].coroutine.op.send.value);
+                        try std.testing.expect(!self.claimed[id]);
+                        self.claimed[id] = true;
+                    }
+                }
+            }
+        }
+
+        fn check(self: *@This()) !void {
+            var active: usize = 0;
+            for (self.entries[0..self.count], self.frames[0..self.count]) |entry, *frame| {
+                try std.testing.expectEqual(entry.done, frame.result != null);
+                try std.testing.expectEqual(!entry.done, frame.task.registered);
+                try std.testing.expectEqual(@intFromBool(entry.started and !entry.done), frame.task.outstanding_io);
+                active += @intFromBool(!entry.done);
+            }
+            try std.testing.expectEqual(active, self.ex.all_tasks.len());
+            try std.testing.expectEqual(self.buffered, self.channel.count);
+        }
+    };
+
+    for ([_]usize{ 0, 1, 3 }) |capacity| {
+        for (0..256) |seed| {
+            var buffer: [3]usize = undefined;
+            var model: Model = .{ .channel = Ch.init(buffer[0..capacity]) };
+            var rng = std.Random.DefaultPrng.init(seed);
+            var step: usize = 0;
+            errdefer std.debug.print("channel capacity={d} seed={d} step={d}\n", .{ capacity, seed, step });
+            while (step < 64) : (step += 1) {
+                if (step < 8) {
+                    if (step % 2 == 0) model.spawn(seed % 2 == 0) else try model.runOne();
+                } else switch (step) {
+                    8 => model.cancel(1),
+                    9 => model.spawn(seed % 2 != 0),
+                    10, 11 => try model.runOne(),
+                    12 => for (model.entries[0..model.count], 0..) |entry, id| {
+                        if (!entry.done and entry.outcome != null) model.cancel(id);
+                    },
+                    13 => model.spawn(seed % 2 == 0),
+                    else => switch (rng.random().uintLessThan(u8, 10)) {
+                        0, 1 => model.spawn(true),
+                        2, 3 => model.spawn(false),
+                        4 => model.cancel(rng.random().uintLessThan(usize, model.count)),
+                        5 => if (step >= 48) model.close() else try model.runOne(),
+                        else => try model.runOne(),
+                    },
+                }
+                try model.check();
+            }
+            model.close();
+            for (0..capacity) |_| model.spawn(false);
+            for (0..model.count * 2) |_| try model.runOne();
+            try model.check();
+            try std.testing.expectEqual(0, model.ex.all_tasks.len());
+            try std.testing.expectEqual(null, model.ex.ready.first);
+            for (model.entries[0..model.count], 0..) |entry, id| {
+                if (entry.send) try std.testing.expect(model.claimed[id]);
+            }
+            model.channel.deinit();
+        }
+    }
+}
