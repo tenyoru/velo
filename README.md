@@ -89,10 +89,14 @@ zig build run-pipeline                 # Channel and Join over a bounded buffer
 zig build run-echo                     # TCP echo server; press Enter to stop
 zig build run-files -- /tmp/velo-demo  # pooled create, write, sync, and read
 zig build run-flusher                  # coalesced deadlines and graceful worker drain
+zig build run-shards -- 4 10000         # bounded request/reply across four loops
 ```
 
 `flusher` closes admission and finishes pending generations before global shutdown;
-shutdown alone may skip queued worker jobs.
+shutdown alone may skip queued worker jobs. `shards` keeps requests pinned through
+their replies, including cancellation. Both carry lifecycle tests.
+`shards` reports throughput, mean request/reply latency, and shutdown/join time;
+its timed exchange includes routing and result validation.
 
 ## Development
 

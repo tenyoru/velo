@@ -66,7 +66,9 @@ jobs:
       - name: ThreadSanitizer
         run: |
           zig test src/root.zig -fllvm -fsanitize-thread -lc -j2
-          zig test -fllvm -fsanitize-thread -lc -j2 --dep velo -Mroot=examples/flusher.zig -fsanitize-thread -Mvelo=src/root.zig
+          for example in flusher shards; do
+            zig test -fllvm -fsanitize-thread -lc -j2 --dep velo -Mroot="examples/$example.zig" -fsanitize-thread -Mvelo=src/root.zig
+          done
 
       - name: Link tests and examples for foreign targets
         run: |

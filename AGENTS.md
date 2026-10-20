@@ -25,7 +25,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just test`: `zig build test --summary all`
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
-- `zig build run-<counters|wakeup|echo|files|pipeline|flusher> [-- args]`: run an example
+- `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards> [-- args]`: run an example
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
   in Debug/ReleaseSafe
 - Release: bump `.version` in `build.zig.zon`, commit, push tag `v<version>`;
@@ -76,7 +76,7 @@ stackful fibers), so coroutines here are explicit state machines.
   stream-helper tests
 - `src/io/tests/worker_pool.zig`, `fs.zig`: worker pool and file-operation tests
 
-- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`; all except
+- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`; all except
   files carry tests
 - `examples/counters.zig`: two independent counters print alternating steps by
   requeueing themselves, without timers or delays
@@ -84,6 +84,8 @@ stackful fibers), so coroutines here are explicit state machines.
   selection and forced epoll on Linux
 - `examples/flusher.zig`: synchronized deadline mailbox, generation snapshots,
   timer rearm and graceful/canceled worker drain
+- `examples/shards.zig`: bounded cross-loop requests, pinned replies and coordinated
+  shutdown; optional shard count, requests per shard and Linux epoll selection
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in
   `build.zig`, run by hand
 

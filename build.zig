@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
-    inline for (.{ "counters", "wakeup", "echo", "files", "pipeline", "flusher" }) |name| {
+    inline for (.{ "counters", "wakeup", "echo", "files", "pipeline", "flusher", "shards" }) |name| {
         const example = b.createModule(.{
             .root_source_file = b.path("examples/" ++ name ++ ".zig"),
             .target = target,
