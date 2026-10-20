@@ -298,6 +298,11 @@ fn arm(state: *State, op: *io.Operation) !void {
 }
 
 fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
+    // Operations that never started cannot change the fd's interest mask.
+    if (exclude) |op| {
+        if (!op.native.epoll.prepared) return null;
+    }
+
     var old: u32 = 0;
     var wanted: u32 = 0;
     var owner: ?*io.Operation = null;
@@ -629,15 +634,30 @@ test "epoll FIFO interest aggregation and cancellation remove idle write interes
         .task = &task,
     };
 
+    var canceled = second;
     track(&state, &first);
+    track(&state, &canceled);
     track(&state, &second);
     track(&state, &send);
     try std.testing.expect(!blocked(&first));
     try std.testing.expect(blocked(&second));
     try std.testing.expect(!blocked(&send));
 
+    first.native.epoll.prepared = true;
+    send.native.epoll.prepared = true;
     try arm(&state, &first);
     try arm(&state, &send);
+    try std.testing.expectEqual(
+        @as(u32, linux.EPOLL.IN | linux.EPOLL.OUT),
+        send.native.epoll.interest,
+    );
+
+    canceled.cancel_requested = true;
+    cancel(&state, &canceled);
+    try start(&state);
+    try std.testing.expect(!canceled.native.epoll.prepared);
+    try std.testing.expectError(error.OperationCanceled, canceled.completion.?);
+    try std.testing.expect(blocked(&second));
     try std.testing.expectEqual(
         @as(u32, linux.EPOLL.IN | linux.EPOLL.OUT),
         send.native.epoll.interest,
