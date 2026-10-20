@@ -11,4 +11,4 @@ test:
     zig build test --summary all
 
 fmt:
-    zig fmt build.zig build.zig.zon src examples
+    zig fmt build.zig build.zig.zon src examples bench

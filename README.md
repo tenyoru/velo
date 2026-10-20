@@ -108,3 +108,25 @@ just fmt
 ```
 
 ThreadSanitizer on Linux: `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`.
+
+## Scalability measurements
+
+```sh
+zig build bench -Doptimize=ReleaseFast
+./zig-out/bin/scalability auto idle-deadline 1000
+./zig-out/bin/scalability epoll expire-all 1000  # Linux-only forced backend
+```
+
+Arguments: `backend workload count [steps]`. Backends are `auto`, `uring`, and
+`epoll`; forced backends require Linux. Workloads are `idle-recv`, `idle-deadline`,
+`idle-timeout`, `same-fd`, `expire-one`, and `expire-all`; count is 1–10000.
+Optional steps (default 10000) apply only to non-expiration workloads.
+
+JSON output separates admission, fixed ready-task work, observed expiration,
+cancellation requests, and shutdown/drain. Socket setup and expiration waiting are
+excluded from these timings. The ready-work phase measures scheduler/loop work,
+not network latency. TCP workloads need roughly two descriptors per connection;
+`same-fd` uses one connection for all waiters. Repeat runs on the same host and
+backend; native macOS/Windows measurements are required for their scaling claims.
+Epoll measurements use a fixed deadline-tree seed, reported as `deadline_seed` in
+JSON, so ASLR does not change the tree shape between runs.

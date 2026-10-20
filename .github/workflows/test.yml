@@ -45,7 +45,7 @@ jobs:
       # Version comes from build.zig.zon.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
 
-      - run: zig fmt --check build.zig build.zig.zon src examples
+      - run: zig fmt --check build.zig build.zig.zon src examples bench
 
       - run: zig build test --summary all
 

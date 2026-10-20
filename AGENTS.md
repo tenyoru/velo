@@ -23,9 +23,11 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just build`: `zig build`
 - `just check -Dtarget=<target>`: compile and link tests for a target without running
 - `just test`: `zig build test --summary all`
-- `just fmt`: `zig fmt build.zig build.zig.zon src examples`
+- `just fmt`: `zig fmt build.zig build.zig.zon src examples bench`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
 - `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards> [-- args]`: run an example
+- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`
+- `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
   in Debug/ReleaseSafe
 - Release: bump `.version` in `build.zig.zon`, commit, push tag `v<version>`;
@@ -86,6 +88,8 @@ stackful fibers), so coroutines here are explicit state machines.
   timer rearm and graceful/canceled worker drain
 - `examples/shards.zig`: bounded cross-loop requests, pinned replies and coordinated
   shutdown; optional shard count, requests per shard and Linux epoll selection
+- `bench/scalability.zig`: portable TCP/timer workloads with separate admission,
+  fixed ready work, expiration, cancellation and drain timings; included in test/check
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in
   `build.zig`, run by hand
 
