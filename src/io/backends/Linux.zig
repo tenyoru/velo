@@ -158,8 +158,8 @@ fn close(loop: *Loop) void {
 pub fn cancel(loop: *Loop, op: *Operation) void {
     if (loop.epoll) |*state| return Epoll.cancel(state, op);
 
-    assert(!op.native.uring.cancel_pending and !op.native.uring.cancel_submitted);
-    op.native.uring.cancel_pending = true;
+    assert(op.native.uring.cancel == .none);
+    op.native.uring.cancel = .pending;
     // Inflight operations have already left pending, so cancellation can reuse their node.
     loop.cancellations.append(&op.node);
 }
@@ -240,8 +240,7 @@ fn prepare(loop: *Loop) void {
         sqe.user_data = @intFromPtr(op) | 2;
 
         loop.cancellations.remove(node);
-        op.native.uring.cancel_pending = false;
-        op.native.uring.cancel_submitted = true;
+        op.native.uring.cancel = .submitted;
         loop.outstanding_cqes += 1;
     }
 
@@ -289,7 +288,7 @@ fn completions(loop: *Loop, wait: u32) !void {
 
         const op: *Operation = @ptrFromInt(cqe.user_data & ~@as(u64, 3));
         const tag = cqe.user_data & 3;
-        if (tag == 2) Uring.cancelComplete(op, cqe.res) else op.complete(tag == 1, cqe.res);
+        if (tag == 2) Uring.cancelComplete(op) else op.complete(tag == 1, cqe.res);
     }
 
     if (wake_failed) return error.WakePollFailed;

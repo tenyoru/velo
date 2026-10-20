@@ -512,7 +512,6 @@ pub fn mapError(e: linux.E) io.Error {
 
 // `activate` without a loop, for operations built by hand.
 fn track(state: *State, op: *io.Operation) void {
-    op.native = .{ .epoll = .{} };
     state.live += 1;
     link(state, op);
     enqueue(state, op);
@@ -540,7 +539,6 @@ test "epoll deadlines preserve equal expiry and large timestamps" {
         .time = .{ .sec = 0, .nsec = 0 },
         .state = .inflight,
         .task = &task,
-        .native = .{ .epoll = .{} },
     });
     const distant = @as(i128, std.math.maxInt(i64)) + 7;
     for (&timers, [_]i128{ 7, 5, 5, distant }) |*op, expires| {

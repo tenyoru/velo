@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const linux = std.os.linux;
 const assert = std.debug.assert;
 
@@ -105,10 +104,6 @@ pub fn Coroutine(comptime kind: Kind) type {
                         .sec = 0,
                         .nsec = 0,
                     },
-                    .native = if (builtin.os.tag == .linux)
-                        (if (loop.epoll != null) .{ .epoll = .{} } else .{ .uring = .{} })
-                    else
-                        .init,
                 },
             };
         }

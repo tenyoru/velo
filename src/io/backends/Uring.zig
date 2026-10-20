@@ -1,21 +1,21 @@
 const std = @import("std");
 const linux = std.os.linux;
 const io = @import("../root.zig");
+const states = @import("../../state.zig");
 const assert = std.debug.assert;
 
 pub const Loop = @import("Linux.zig");
 
 pub const OperationState = union {
     uring: struct {
-        cancel_pending: bool = false,
-        cancel_submitted: bool = false,
-        cancel_result: ?i32 = null,
+        cancel: states.Cancel = .none,
         message: linux.msghdr = undefined,
         vector: std.posix.iovec = undefined,
     },
     epoll: @import("Epoll.zig").OperationState,
 
-    pub const init: OperationState = .{ .uring = .{} };
+    // A constant default lets constructors write in place; `prepare` claims the io_uring arm.
+    pub const init: OperationState = .{ .epoll = .{} };
 };
 
 pub const NativeError = linux.E;
@@ -130,7 +130,10 @@ pub fn closeSocket(fd: io.Socket) io.Error!void {
 }
 
 pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_uring_sqe) void {
+    // Datagram fields are written before use; initializing only `cancel` avoids an 80-byte memset.
+    op.native = .{ .uring = undefined };
     const native = &op.native.uring;
+    native.cancel = .none;
     switch (op.data) {
         .connect => |v| sqe.prep_connect(v.fd, v.address, v.address_len),
         .accept => |v| sqe.prep_accept(v.fd, null, null, linux.SOCK.CLOEXEC),
@@ -175,11 +178,10 @@ pub fn complete(op: *io.Operation, is_timer: bool, res: i32) void {
     finishIfReady(op);
 }
 
-pub fn cancelComplete(op: *io.Operation, res: i32) void {
-    assert(op.state == .inflight and op.native.uring.cancel_submitted);
-    assert(op.native.uring.cancel_result == null);
+pub fn cancelComplete(op: *io.Operation) void {
+    assert(op.state == .inflight and op.native.uring.cancel == .submitted);
 
-    op.native.uring.cancel_result = res;
+    op.native.uring.cancel = .done;
     finishIfReady(op);
 }
 
@@ -187,8 +189,7 @@ fn finishIfReady(op: *io.Operation) void {
     if (op.primary == null or (op.linked and op.timer == null)) return;
 
     // A cancellation CQE also carries this operation's address.
-    if (op.native.uring.cancel_pending or
-        (op.native.uring.cancel_submitted and op.native.uring.cancel_result == null)) return;
+    if (op.native.uring.cancel == .pending or op.native.uring.cancel == .submitted) return;
 
     op.finish(result(op));
 }

@@ -29,6 +29,13 @@ pub const Operation = enum {
     done,
 };
 
+pub const Cancel = enum {
+    none,
+    pending,
+    submitted,
+    done,
+};
+
 pub const Job = enum {
     idle,
     pending,

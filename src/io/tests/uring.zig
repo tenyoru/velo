@@ -602,16 +602,13 @@ test "io cancellation retains operation through all three CQE orders" {
         var primary: linux.io_uring_sqe = undefined;
         var timer: linux.io_uring_sqe = undefined;
         op.operation.prepare(&primary, &timer);
-        op.operation.native.uring.cancel_submitted = true;
+        op.operation.native.uring.cancel = .submitted;
 
         for (order, 0..) |tag, index| {
             switch (tag) {
                 0 => op.operation.complete(false, if (succeeded) 1 else negative(.CANCELED)),
                 1 => op.operation.complete(true, negative(.CANCELED)),
-                2 => @import("../backends/Uring.zig").cancelComplete(
-                    &op.operation,
-                    if (succeeded) negative(.NOENT) else 0,
-                ),
+                2 => @import("../backends/Uring.zig").cancelComplete(&op.operation),
                 else => unreachable,
             }
 
