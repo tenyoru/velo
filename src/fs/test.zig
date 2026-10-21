@@ -314,7 +314,7 @@ test "filesystem forced uring roundtrip and per-opcode worker fallback" {
     try roundtrip(&loop);
 }
 
-test "filesystem fallback offsets and invalid access match native errors" {
+test "filesystem offsets and platform access errors are preserved" {
     for (support.modes) |mode| {
         var tmp = testing.tmpDir(.{});
         defer tmp.cleanup();
@@ -334,12 +334,18 @@ test "filesystem fallback offsets and invalid access match native errors" {
             .coroutine = .init(&pool, .{ .file = write_only, .buffer = &buffer }),
         };
         finish(&loop, &read);
-        try testing.expectError(error.NotOpenForReading, read.getResult());
+        try testing.expectError(
+            if (builtin.os.tag == .windows) error.AccessDenied else error.NotOpenForReading,
+            read.getResult(),
+        );
         var write: co.Frame(fs.WriteAt) = .{
             .coroutine = .init(&pool, .{ .file = read_only, .buffer = "x" }),
         };
         finish(&loop, &write);
-        try testing.expectError(error.NotOpenForWriting, write.getResult());
+        try testing.expectError(
+            if (builtin.os.tag == .windows) error.AccessDenied else error.NotOpenForWriting,
+            write.getResult(),
+        );
 
         for ([_]u64{ @as(u64, std.math.maxInt(i64)) + 1, std.math.maxInt(u64) }) |offset| {
             read = .{ .coroutine = .init(&pool, .{
