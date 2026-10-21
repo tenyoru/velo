@@ -6,7 +6,9 @@ machines: nothing switches stacks.
 - **Coroutines:** executor, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
 - **Threads:** cross-thread posts into a loop; fixed-size `WorkerPool` for blocking work
-- **Files:** positional reads, writes, and sync on the worker pool
+- **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
+  (macOS), or overlapped IOCP (Windows), with worker fallback; sync uses io_uring
+  or workers, and open/create/close use workers
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
 ## Architecture
@@ -27,7 +29,7 @@ flowchart LR
 
 - `Frame(C)` holds a coroutine's state, task handle, and result. Its coroutine
   returns `.pending` to yield or `.ready` to finish; `Task.wake()` schedules another poll.
-- `Loop` drives the executor and socket/timer operations through the selected backend.
+- `Loop` drives the executor and native socket, timer, and file operations.
   I/O completions wake waiting tasks.
 - `Control` runs posted callbacks on the loop thread. `WorkerPool` executes blocking
   actions on worker threads and posts completions back to that loop.
@@ -87,7 +89,7 @@ zig build run-counters                 # two coroutines taking turns
 zig build run-wakeup                   # cross-thread post, stop, and resume
 zig build run-pipeline                 # Channel and Join over a bounded buffer
 zig build run-echo                     # TCP echo server; press Enter to stop
-zig build run-files -- /tmp/velo-demo  # pooled create, write, sync, and read
+zig build run-files -- /tmp/velo-demo  # create, write, sync, and read a file
 zig build run-flusher                  # coalesced deadlines and graceful worker drain
 zig build run-shards -- 4 10000         # bounded request/reply across four loops
 ```

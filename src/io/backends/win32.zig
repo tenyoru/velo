@@ -9,6 +9,8 @@ pub const OPERATION_ABORTED = 995;
 pub const WAIT_TIMEOUT = 258;
 pub const NOT_FOUND = 1168;
 pub const INVALID_PARAMETER = 87;
+pub const HANDLE_EOF = 38;
+pub const FILE_FLAG_OVERLAPPED = 0x40000000;
 
 pub const OVERLAPPED = extern struct {
     internal: usize = 0,
@@ -172,6 +174,20 @@ pub extern "kernel32" fn PostQueuedCompletionStatus(
 ) callconv(.winapi) i32;
 
 pub extern "kernel32" fn CancelIoEx(?HANDLE, ?*OVERLAPPED) callconv(.winapi) i32;
+
+pub extern "kernel32" fn ReOpenFile(HANDLE, u32, u32, u32) callconv(.winapi) HANDLE;
+
+pub extern "kernel32" fn GetFileType(HANDLE) callconv(.winapi) u32;
+
+pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, u32, ?*u32, *OVERLAPPED) callconv(.winapi) i32;
+
+pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, u32, ?*u32, *OVERLAPPED) callconv(.winapi) i32;
+
+pub extern "kernel32" fn CreateEventW(?*anyopaque, i32, i32, ?[*:0]const u16) callconv(.winapi) ?HANDLE;
+
+pub extern "kernel32" fn GetOverlappedResult(HANDLE, *OVERLAPPED, *u32, i32) callconv(.winapi) i32;
+
+pub extern "kernel32" fn FlushFileBuffers(HANDLE) callconv(.winapi) i32;
 
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) i32;
 

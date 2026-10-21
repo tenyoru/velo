@@ -271,7 +271,7 @@ fn attempt(state: *State, op: *io.Operation) !void {
                 break :blk rc;
             },
             .close => |v| linux.close(v.fd),
-            .timeout => unreachable,
+            .timeout, .read_at, .write_at, .sync => unreachable,
         };
 
         const e = linux.errno(rc);
@@ -457,7 +457,7 @@ fn pollable(op: *const io.Operation) bool {
 fn socket(op: *const io.Operation) linux.fd_t {
     return switch (op.data) {
         inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
-        .timeout => unreachable,
+        .timeout, .read_at, .write_at, .sync => unreachable,
     };
 }
 

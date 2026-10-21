@@ -33,13 +33,13 @@ pub const backend = switch (builtin.os.tag) {
 };
 pub const Loop = backend.Loop;
 pub const LoopOptions = struct {
-    /// io_uring submission capacity, not a task limit; Linux requires a power of two >= 2.
+    /// io_uring SQ/macOS AIO admission capacity, not a task limit; Linux requires a power of two >= 2.
     entries: u16 = 32,
 };
 
 pub const Control = @import("Control.zig");
 pub const WorkerPool = @import("WorkerPool.zig");
-pub const fs = @import("fs.zig");
+pub const fs = @import("../fs/root.zig");
 pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
 
@@ -81,6 +81,7 @@ pub const Error = error{
     SystemResources,
     MessageTooBig,
     OsError,
+    UnsupportedOperation,
 };
 
 pub const Operation = @import("Operation.zig");
@@ -100,6 +101,5 @@ test {
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/worker_pool.zig");
-    _ = @import("tests/fs.zig");
     _ = @import("tests/runtime.zig");
 }

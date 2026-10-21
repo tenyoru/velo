@@ -2,6 +2,7 @@
 
 pub const coroutines = @import("coroutines/root.zig");
 pub const io = @import("io/root.zig");
+pub const fs = @import("fs/root.zig");
 
 test {
     const testing = @import("std").testing;

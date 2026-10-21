@@ -1,8 +1,10 @@
 //! Adds O_NONBLOCK and SO_NOSIGPIPE; descriptors remain caller-owned.
 //! Readiness removal cannot undo Connect; close its socket on failure, cancel or timeout.
+//! File reads/writes use AIO when the SIGEV_KEVENT probe succeeds; Sync stays on workers.
 
 const std = @import("std");
 const c = std.c;
+const DarwinAio = @import("DarwinAio.zig");
 const io = @import("../root.zig");
 const Control = @import("../Control.zig");
 const co = @import("../../coroutines/root.zig");
@@ -18,6 +20,7 @@ pub const OperationState = struct {
     prepared: bool = false,
     connecting: bool = false,
     registered: bool = false,
+    aio: DarwinAio.Request = std.mem.zeroes(DarwinAio.Request),
 };
 
 pub fn errno(result: ?i32) ?NativeError {
@@ -126,6 +129,10 @@ pub const Loop = struct {
     active: usize = 0,
     running: bool = false,
     live: std.DoublyLinkedList = .{},
+    file_ops: struct { read: bool = false, write: bool = false, sync: bool = false } = .{},
+    file_inflight: usize = 0,
+    file_limit: u16 = 0,
+    file_backoff: bool = false,
 
     pub fn init(options: Options) !Loop {
         if (options.entries < 2) return error.RingTooSmall;
@@ -139,7 +146,7 @@ pub const Loop = struct {
         };
         errdefer _ = c.close(fd);
 
-        const changes = [_]c.Kevent{
+        const changes = [_]c.kevent64_s{
             .{
                 .ident = 0,
                 .filter = c.EVFILT.USER,
@@ -147,17 +154,23 @@ pub const Loop = struct {
                 .fflags = 0,
                 .data = 0,
                 .udata = 0,
+                .ext = .{ 0, 0 },
             },
         };
 
         while (true) {
-            const e = c.errno(c.kevent(fd, &changes, 1, &.{}, 0, null));
+            const e = c.errno(c.kevent64(fd, &changes, 1, &.{}, 0, .{}, null));
             if (e == .INTR) continue;
             if (e != .SUCCESS) return mapError(e);
             break;
         }
 
-        return .{ .kqueue = fd };
+        const files = DarwinAio.probe(fd);
+        return .{
+            .kqueue = fd,
+            .file_ops = .{ .read = files, .write = files },
+            .file_limit = options.entries,
+        };
     }
 
     const shared = @import("../loop.zig").Shared(Loop, .{
@@ -176,6 +189,7 @@ pub const Loop = struct {
 
     fn close(loop: *Loop) void {
         assert(loop.live.first == null);
+        assert(loop.file_inflight == 0);
         _ = c.close(loop.kqueue);
     }
 
@@ -229,6 +243,11 @@ pub const Loop = struct {
             if (op.data == .timeout or op.cancel_requested or op.native.prepared or
                 loop.blocked(op)) continue;
 
+            if (fileOperation(op)) {
+                loop.startFile(op);
+                continue;
+            }
+
             op.native.prepared = true;
             if (op.data != .close) {
                 if (configure(socket(op))) |e| {
@@ -243,17 +262,51 @@ pub const Loop = struct {
 
     // O(n²) activation, O(n) deadlines; use fd/direction indexing and a timer heap at scale.
     fn blocked(loop: *Loop, op: *io.Operation) bool {
-        if (op.data == .close) return false;
+        if (op.data == .close or fileOperation(op)) return false;
 
         var node = loop.live.first;
         while (node) |current| : (node = current.next) {
             const other: *io.Operation = @fieldParentPtr("node", current);
             if (other == op) return false;
-            if (other.data == .timeout or other.data == .close) continue;
+            if (other.data == .timeout or other.data == .close or fileOperation(other)) continue;
             if (socket(other) == socket(op) and filter(other) == filter(op)) return true;
         }
 
         unreachable;
+    }
+
+    fn startFile(loop: *Loop, op: *io.Operation) void {
+        if (op.data == .sync) {
+            loop.fail(op, .OPNOTSUPP);
+            return;
+        }
+        if (loop.file_inflight >= loop.file_limit or loop.file_backoff) return;
+
+        switch (op.data) {
+            inline .read_at, .write_at => |v| DarwinAio.prepare(
+                &op.native.aio,
+                loop.kqueue,
+                v.file.handle,
+                v.buffer,
+                v.offset,
+                op,
+            ),
+            else => unreachable,
+        }
+        const write = op.data == .write_at;
+        var e = DarwinAio.submit(&op.native.aio, write);
+        if (e == .SUCCESS) {
+            op.native.prepared = true;
+            op.native.registered = true;
+            loop.file_inflight += 1;
+            return;
+        }
+        if (e == .AGAIN) e = DarwinAio.rejection(&op.native.aio, write);
+        if (e == .AGAIN and loop.file_inflight != 0) {
+            loop.file_backoff = true;
+            return;
+        }
+        loop.fail(op, e);
     }
 
     fn attempt(loop: *Loop, op: *io.Operation) void {
@@ -362,7 +415,7 @@ pub const Loop = struct {
                     break :blk fd;
                 },
                 .close => |v| c.close(v.fd),
-                .timeout => unreachable,
+                .timeout, .read_at, .write_at, .sync => unreachable,
             };
 
             const e = c.errno(result);
@@ -391,7 +444,7 @@ pub const Loop = struct {
     }
 
     fn change(loop: *Loop, op: *io.Operation, flags: u16) ?c.E {
-        const changes = [_]c.Kevent{
+        const changes = [_]c.kevent64_s{
             .{
                 .ident = @intCast(socket(op)),
                 .filter = filter(op),
@@ -399,12 +452,13 @@ pub const Loop = struct {
                 .fflags = 0,
                 .data = 0,
                 .udata = @intFromPtr(op),
+                .ext = .{ 0, 0 },
             },
         };
-        var unused: [0]c.Kevent = .{};
+        var unused: [0]c.kevent64_s = .{};
 
         while (true) {
-            const e = c.errno(c.kevent(loop.kqueue, &changes, 1, &unused, 0, null));
+            const e = c.errno(c.kevent64(loop.kqueue, &changes, 1, &unused, 0, .{}, null));
             if (e == .INTR) continue;
             return if (e == .SUCCESS) null else e;
         }
@@ -432,9 +486,9 @@ pub const Loop = struct {
             } else timeout_ptr = null;
         }
 
-        var batch: [64]c.Kevent = undefined;
-        const changes: [0]c.Kevent = .{};
-        const count = c.kevent(loop.kqueue, &changes, 0, &batch, batch.len, timeout_ptr);
+        var batch: [64]c.kevent64_s = undefined;
+        const changes: [0]c.kevent64_s = .{};
+        const count = c.kevent64(loop.kqueue, &changes, 0, &batch, batch.len, .{}, timeout_ptr);
         const e = c.errno(count);
         if (e == .INTR) return false;
         if (e != .SUCCESS) return mapError(e);
@@ -451,7 +505,19 @@ pub const Loop = struct {
             const op: *io.Operation = @ptrFromInt(event.udata);
             assert(op.state == .inflight and op.native.registered);
             op.native.registered = false;
-            if (event.flags & c.EV.ERROR != 0 and event.data != 0) {
+            if (fileOperation(op)) {
+                assert(event.filter == c.EVFILT.AIO and event.ident == @intFromPtr(&op.native.aio));
+                loop.file_inflight -= 1;
+                loop.file_backoff = false;
+                signaled = true;
+                const file_error: c.E = @fromBackingInt(@intCast(event.ext[0]));
+                if (file_error != .SUCCESS) {
+                    loop.fail(op, file_error);
+                } else {
+                    op.primary = @intCast(event.ext[1]);
+                    loop.finish(op, @intCast(event.ext[1]));
+                }
+            } else if (event.flags & c.EV.ERROR != 0 and event.data != 0) {
                 loop.fail(op, @fromBackingInt(@intCast(event.data)));
             } else loop.attempt(op);
         }
@@ -465,6 +531,8 @@ pub const Loop = struct {
         while (node) |current| {
             node = current.next;
             const op: *io.Operation = @fieldParentPtr("node", current);
+            // Avoid aio_cancel: canceled-kevent delivery is unverified across kernels; completion owns reaping.
+            if (fileOperation(op) and op.native.registered) continue;
             if (!op.cancel_requested) {
                 const expires = op.native.expires orelse continue;
                 if (expires > timestamp) continue;
@@ -506,7 +574,7 @@ pub const Loop = struct {
 
 fn signalLoop(control: *Control) void {
     const loop: *Loop = @fieldParentPtr("control", control);
-    const changes = [_]c.Kevent{
+    const changes = [_]c.kevent64_s{
         .{
             .ident = 0,
             .filter = c.EVFILT.USER,
@@ -514,21 +582,26 @@ fn signalLoop(control: *Control) void {
             .fflags = c.NOTE.TRIGGER,
             .data = 0,
             .udata = 0,
+            .ext = .{ 0, 0 },
         },
     };
 
     while (true) {
-        const e = c.errno(c.kevent(loop.kqueue, &changes, 1, &.{}, 0, null));
+        const e = c.errno(c.kevent64(loop.kqueue, &changes, 1, &.{}, 0, .{}, null));
         if (e == .INTR) continue;
         if (e != .SUCCESS) std.debug.panic("kqueue wake failed: {t}", .{e});
         return;
     }
 }
 
+fn fileOperation(op: *const io.Operation) bool {
+    return op.data == .read_at or op.data == .write_at or op.data == .sync;
+}
+
 fn socket(op: *const io.Operation) c.fd_t {
     return switch (op.data) {
         inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
-        .timeout => unreachable,
+        .timeout, .read_at, .write_at, .sync => unreachable,
     };
 }
 
@@ -710,4 +783,69 @@ test "kqueue datagrams report truncation and accept empty messages" {
     recv.coroutine.deinit();
     send.coroutine.deinit();
     try std.testing.expectError(error.BadFileDescriptor, shutdownSocket(-1, .both));
+}
+
+test "kqueue accepted AIO survives cancellation and shutdown until original completion" {
+    const fs = @import("../../fs/root.zig");
+    const support = @import("../tests/support.zig");
+    const testing = std.testing;
+    for ([_]bool{ false, true }) |shutdown| {
+        var loop = try Loop.init(.{ .entries = 2 });
+        defer loop.deinit();
+        if (!loop.file_ops.read or !loop.file_ops.write) return error.SkipZigTest;
+        var pool: io.WorkerPool = undefined;
+        try pool.init(testing.allocator, &loop, 1);
+        defer pool.deinit();
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const file = try tmp.dir.createFile(testing.io, "cancel", .{ .read = true });
+        defer file.close(testing.io);
+        try file.writePositionalAll(testing.io, "R", 0);
+
+        var buffer: [1]u8 = undefined;
+        var read: co.Frame(fs.ReadAt) = .{
+            .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer }),
+        };
+        var write: co.Frame(fs.WriteAt) = .{
+            .coroutine = .init(&pool, .{ .file = file, .buffer = "W", .offset = 1 }),
+        };
+        var queued: co.Frame(fs.WriteAt) = .{
+            .coroutine = .init(&pool, .{ .file = file, .buffer = "N", .offset = 2 }),
+        };
+        inline for (.{ &read, &write, &queued }) |frame| loop.executor.spawn(&frame.task);
+        loop.executor.run();
+        loop.activate(nanoseconds(try now()));
+        loop.start();
+        const accepted = read.coroutine.native.inner.operation.native.registered and
+            write.coroutine.native.inner.operation.native.registered;
+        const waiting = !queued.coroutine.native.inner.operation.native.registered;
+        if (shutdown) {
+            loop.shutdown();
+            _ = loop.control.service(&loop.executor);
+        } else {
+            inline for (.{ &read, &write, &queued }) |frame| frame.coroutine.cancel();
+        }
+        loop.cancelAndExpire(nanoseconds(now() catch unreachable)) catch unreachable;
+        const retained = loop.file_inflight == 2 and
+            read.coroutine.native.inner.operation.native.registered and
+            write.coroutine.native.inner.operation.native.registered and
+            read.task.outstanding_io == 1 and write.task.outstanding_io == 1;
+        support.run(&loop);
+        try testing.expect(accepted and waiting and retained);
+        try testing.expectEqual(1, try read.getResult());
+        try testing.expectEqualStrings("R", &buffer);
+        try testing.expectEqual(1, try write.getResult());
+        try testing.expectError(error.OperationCanceled, queued.getResult());
+        inline for (.{ &read, &write, &queued }) |frame| {
+            try testing.expectEqual(0, frame.task.outstanding_io);
+            frame.coroutine.deinit();
+        }
+        var bytes: [3]u8 = undefined;
+        try testing.expectEqual(2, try file.readPositional(testing.io, &.{&bytes}, 0));
+        try testing.expectEqualStrings("RW", bytes[0..2]);
+        try testing.expectEqual(0, loop.file_inflight);
+        try testing.expectEqual(0, pool.outstanding);
+        try testing.expectEqual(null, loop.control.registrations.first);
+        try support.drained(&loop);
+    }
 }

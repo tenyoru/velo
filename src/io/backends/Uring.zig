@@ -147,6 +147,9 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
         .recvfrom => |v| sqe.prep_recvmsg(v.fd, datagram(op, &native.message, &native.vector), 0),
         .close => |v| sqe.prep_close(v.fd),
         .timeout => sqe.prep_timeout(&op.time, 0, 0),
+        .read_at => |v| sqe.prep_read(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
+        .write_at => |v| sqe.prep_write(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
+        .sync => |v| sqe.prep_fsync(v.file.handle, 0),
     }
 
     const id: u64 = @intFromPtr(op);

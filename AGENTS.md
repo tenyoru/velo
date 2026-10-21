@@ -60,14 +60,25 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/io/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
   fd buckets, run queue, deadline treap
 - `src/io/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
-  software timers
+  software timers, kevent64 and capability-probed native AIO reads/writes
+- `src/io/backends/DarwinAio.zig`: Darwin AIO ABI bindings, zero-length completion
+  probe, submission and rejection diagnostics; kevent delivery owns reaping
 - `src/io/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing
   WinAPI bindings
 - `src/io/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
-- `src/io/WorkerPool.zig`, `src/io/fs.zig`: bounded blocking workers and pooled
-  file operations
+- `src/io/WorkerPool.zig`: bounded blocking workers
 - `src/io/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+
+- `src/fs/root.zig`: `velo.fs` (also `velo.io.fs`); operations select from
+  `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers
+- `src/fs/native.zig`: native file wrappers over shared `io.Operation`, filesystem errno mapping
+- `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
+  worker transfers use private event-tagged OVERLAPPEDs, never Threaded APCs
+- `src/fs/worker.zig`: WorkerPool file operations; `velo.fs.worker` forces them
+- `src/fs/test.zig`: forced uring/epoll/fallback, errno, cancellation, pressure, drain tests
+- `src/fs/test_windows.zig`, `test_macos.zig`: native platform file tests;
+  macOS native cases explicitly skip when the AIO-to-kqueue probe fails
 
 - `src/io/tests/support.zig`: shared socket setup, short-transfer echo, deadlines,
   loop driving, and drain checks
@@ -76,7 +87,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/io/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
 - `src/io/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
   stream-helper tests
-- `src/io/tests/worker_pool.zig`, `fs.zig`: worker pool and file-operation tests
+- `src/io/tests/worker_pool.zig`: worker pool tests
 
 - `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`; all except
   files carry tests
@@ -161,6 +172,18 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
 - **io_uring:** [Lord of the io_uring](https://unixism.net/loti/);
   [io_uring_setup(2)](https://man7.org/linux/man-pages/man2/io_uring_setup.2.html)
   feature flags, NODROP completion retention, overflow handling
+- **Darwin AIO** (checked 2026-10-21):
+  [Apple XNU kern_aio.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_aio.c),
+  `SIGEV_KEVENT`, `filt_aioprocess`: completion errno/result in kevent64 `ext`,
+  delivery reaps the request. Probe runtime support; do not infer it from headers.
+  Submitted requests drain normally rather than relying on canceled-kevent delivery.
+- **Windows file I/O** (checked 2026-10-21):
+  [ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile),
+  [ReOpenFile](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile),
+  [GetQueuedCompletionStatus](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getqueuedcompletionstatus).
+  Native success still awaits a packet. Worker transfers alone use a private
+  event's low bit to suppress IOCP packets; APC-based std.Io.Threaded transfers
+  cannot be used on associated handles. Windows Sync remains synchronous/worker-backed.
 
 Rules:
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const assert = std.debug.assert;
 
@@ -32,7 +33,7 @@ cancel_requested: bool = false,
 native: backend.OperationState = .init,
 registration: Control.Registration = .{ .cancel = cancelRegistered },
 
-pub const Kind = enum { connect, accept, send, recv, sendto, recvfrom, close, timeout };
+pub const Kind = enum { connect, accept, send, recv, sendto, recvfrom, close, timeout, read_at, write_at, sync };
 
 pub const Data = union(Kind) {
     connect: struct {
@@ -75,13 +76,26 @@ pub const Data = union(Kind) {
     timeout: struct {
         duration: Timespec,
     },
+    read_at: struct {
+        file: std.Io.File,
+        buffer: []u8,
+        offset: u64 = 0,
+    },
+    write_at: struct {
+        file: std.Io.File,
+        buffer: []const u8,
+        offset: u64 = 0,
+    },
+    sync: struct {
+        file: std.Io.File,
+    },
 };
 
 pub fn Coroutine(comptime kind: Kind) type {
     const T = switch (kind) {
         .accept => Socket,
-        .send, .recv, .sendto, .recvfrom => usize,
-        .connect, .close, .timeout => void,
+        .send, .recv, .sendto, .recvfrom, .read_at, .write_at => usize,
+        .connect, .close, .timeout, .sync => void,
     };
 
     return struct {
@@ -137,6 +151,37 @@ pub fn Coroutine(comptime kind: Kind) type {
                             op.completion = error.MessageTooBig;
 
                             return .{ .ready = error.MessageTooBig };
+                        }
+                    }
+
+                    if (comptime kind == .read_at or kind == .write_at or kind == .sync) {
+                        const supported = switch (kind) {
+                            .read_at => op.loop.file_ops.read,
+                            .write_at => op.loop.file_ops.write,
+                            .sync => op.loop.file_ops.sync,
+                            else => unreachable,
+                        } and (if (builtin.os.tag == .windows)
+                            @field(op.data, @tagName(kind)).file.flags.nonblocking
+                        else
+                            true);
+                        if (!supported) {
+                            op.state = .done;
+                            op.completion = error.UnsupportedOperation;
+                            return .{ .ready = error.UnsupportedOperation };
+                        }
+                    }
+
+                    if (comptime kind == .read_at or kind == .write_at) {
+                        const v = @field(op.data, @tagName(kind));
+                        if (v.offset > std.math.maxInt(i64)) {
+                            op.state = .done;
+                            op.completion = error.InvalidArgument;
+                            return .{ .ready = error.InvalidArgument };
+                        }
+                        if (v.buffer.len == 0) {
+                            op.state = .done;
+                            op.completion = 0;
+                            return .{ .ready = 0 };
                         }
                     }
 

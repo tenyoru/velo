@@ -1,5 +1,5 @@
-//! Overlapped sockets stay on one loop; never skip success packets or suppress OVERLAPPED events.
-//! Initialize the loop before socket helpers; close sockets before deinit.
+//! Native sockets and files stay on one loop; never skip success packets or suppress their events.
+//! Initialize the loop before socket helpers; close associated handles before deinit.
 
 const std = @import("std");
 const io = @import("../root.zig");
@@ -128,7 +128,15 @@ pub fn closeSocket(fd: io.Socket) io.Error!void {
 fn socketOf(op: *io.Operation) usize {
     return switch (op.data) {
         inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
+        .timeout, .read_at, .write_at, .sync => unreachable,
+    };
+}
+
+fn handleOf(op: *io.Operation) w.HANDLE {
+    return switch (op.data) {
+        inline .read_at, .write_at, .sync => |v| v.file.handle,
         .timeout => unreachable,
+        else => @ptrFromInt(socketOf(op)),
     };
 }
 
@@ -143,6 +151,7 @@ pub const Loop = struct {
     running: bool = false,
     live: std.DoublyLinkedList = .{},
     park_ms: u32 = 0,
+    file_ops: struct { read: bool = true, write: bool = true, sync: bool = false } = .{},
 
     const wake_key: usize = 1;
 
@@ -264,10 +273,11 @@ pub const Loop = struct {
         }
         if (op.data == .timeout) return;
 
-        const fd = socketOf(op);
+        const handle = handleOf(op);
+        const fd = @intFromPtr(handle);
         // INVALID_SOCKET is also IOCP's sentinel for creating a new port.
         if (fd == w.INVALID_SOCKET) {
-            loop.finish(op, 10038, 0);
+            loop.finish(op, if (op.data == .read_at or op.data == .write_at) 6 else 10038, 0);
             return;
         }
 
@@ -277,9 +287,9 @@ pub const Loop = struct {
             return;
         }
 
-        // Sockets carry no loop, so their first operation associates them. Windows allows
+        // Handles carry no loop, so their first operation associates them. Windows allows
         // one association per handle and rejects a repeat with ERROR_INVALID_PARAMETER.
-        if (w.CreateIoCompletionPort(@ptrFromInt(fd), loop.port, 0, 0) == null) {
+        if (w.CreateIoCompletionPort(handle, loop.port, 0, 0) == null) {
             const code = w.GetLastError();
             if (code != w.INVALID_PARAMETER) {
                 loop.finish(op, code, 0);
@@ -288,6 +298,24 @@ pub const Loop = struct {
         }
 
         const result = switch (op.data) {
+            inline .read_at, .write_at => |v, kind| {
+                op.native.overlapped.offset = @truncate(v.offset);
+                op.native.overlapped.offset_high = @truncate(v.offset >> 32);
+                const len: u32 = @intCast(@min(v.buffer.len, std.math.maxInt(u32)));
+                const success = if (kind == .read_at)
+                    w.ReadFile(handle, v.buffer.ptr, len, null, &op.native.overlapped)
+                else
+                    w.WriteFile(handle, v.buffer.ptr, len, null, &op.native.overlapped);
+                if (success == 0) {
+                    const code = w.GetLastError();
+                    // Immediate EOF queues no packet; pending EOF still owns OVERLAPPED.
+                    if (kind == .read_at and code == w.HANDLE_EOF)
+                        loop.finish(op, 0, 0)
+                    else if (code != w.IO_PENDING)
+                        loop.finish(op, code, 0);
+                }
+                return;
+            },
             .send => |v| blk: {
                 op.native.buffer = .{
                     .buf = @constCast(v.buffer.ptr),
@@ -560,7 +588,7 @@ pub const Loop = struct {
             }
 
             op.native.expired = !op.cancel_requested;
-            if (w.CancelIoEx(@ptrFromInt(socketOf(op)), &op.native.overlapped) == 0) {
+            if (w.CancelIoEx(handleOf(op), &op.native.overlapped) == 0) {
                 const code = w.GetLastError();
                 if (code != w.NOT_FOUND) {
                     op.timer = @bitCast(code);
@@ -597,6 +625,11 @@ pub const Loop = struct {
         const native: *OperationState = @fieldParentPtr("overlapped", pointer);
         const op: *io.Operation = @fieldParentPtr("native", native);
         assert(op.loop == loop and op.state == .inflight);
+
+        if (op.data == .read_at and code == w.HANDLE_EOF) {
+            loop.finish(op, 0, 0);
+            return true;
+        }
 
         if (code == 0 and op.data == .connect) {
             if (w.setsockopt(

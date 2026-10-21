@@ -2,7 +2,7 @@ const std = @import("std");
 const velo = @import("velo");
 const co = velo.coroutines;
 const io = velo.io;
-const fs = io.fs;
+const fs = velo.fs;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -23,7 +23,6 @@ fn writeAndVerify(allocator: std.mem.Allocator, std_io: std.Io, path: []const u8
     var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
-    // Blocking file calls run on workers; their completions wake the event loop.
     var pool: io.WorkerPool = undefined;
     try pool.init(allocator, &loop, 2);
     // Join workers before destroying the loop they post results to.
@@ -81,13 +80,13 @@ fn writeAndVerify(allocator: std.mem.Allocator, std_io: std.Io, path: []const u8
     return payload.len;
 }
 
-fn run(loop: *io.Loop, work: anytype) @TypeOf(work.result) {
+fn run(loop: *io.Loop, work: anytype) @typeInfo(@TypeOf(co.Frame(@TypeOf(work)).getResult)).@"fn".return_type.? {
     // This example waits for each step; the local frame stays pinned until completion.
     var frame: co.Frame(@TypeOf(work)) = .{ .coroutine = work };
 
     loop.executor.spawn(&frame.task);
 
-    // A fatal run error cannot unwind buffers still borrowed by a worker.
+    // A fatal run error cannot unwind buffers still borrowed by I/O.
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
     frame.coroutine.deinit();

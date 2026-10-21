@@ -11,6 +11,7 @@ pub const Options = @import("../root.zig").LoopOptions;
 
 ring: linux.IoUring = undefined,
 epoll: ?Epoll.State = null,
+file_ops: struct { read: bool = false, write: bool = false, sync: bool = false } = .{},
 executor: Executor = .{},
 pending: std.DoublyLinkedList = .{},
 cancellations: std.DoublyLinkedList = .{},
@@ -27,7 +28,7 @@ pub fn init(options: Options) !Loop {
 }
 
 /// `.auto` falls back to epoll only when io_uring is denied, or the kernel lacks it or
-/// an opcode the loop submits.
+/// a required networking/control opcode.
 pub const Backend = enum { auto, uring, epoll };
 
 pub fn initWithBackend(options: Options, selected: Backend) !Loop {
@@ -108,7 +109,7 @@ pub const release = shared.release;
 pub const stop = shared.stop;
 pub const shutdown = shared.shutdown;
 
-/// Every opcode the loop submits.
+/// Required networking/control opcodes; optional file operations fall back to workers.
 const required_ops = [_]linux.IORING_OP{
     .POLL_ADD,
     .SENDMSG,
@@ -137,7 +138,14 @@ fn initUring(entries: u16) !Loop {
     };
     if (!supportsAll(probe)) return error.SystemOutdated;
 
-    return .{ .ring = ring };
+    return .{
+        .ring = ring,
+        .file_ops = .{
+            .read = probe.is_supported(.READ),
+            .write = probe.is_supported(.WRITE),
+            .sync = probe.is_supported(.FSYNC),
+        },
+    };
 }
 
 fn supportsAll(probe: linux.io_uring_probe) bool {
@@ -294,13 +302,16 @@ fn completions(loop: *Loop, wait: u32) !void {
     if (wake_failed) return error.WakePollFailed;
 }
 
-test "io_uring probe requires every submitted opcode" {
+test "io_uring probe requires networking opcodes but not optional files" {
     var probe = std.mem.zeroInit(linux.io_uring_probe, .{
         .last_op = .RECV,
         .ops_len = @backingInt(linux.IORING_OP.RECV) + 1,
     });
     for (required_ops) |op| probe.ops[@backingInt(op)].flags = linux.IO_URING_OP_SUPPORTED;
 
+    try std.testing.expect(!probe.is_supported(.READ));
+    try std.testing.expect(!probe.is_supported(.WRITE));
+    try std.testing.expect(!probe.is_supported(.FSYNC));
     try std.testing.expect(supportsAll(probe));
 
     // Like 5.5: CONNECT is the newest opcode, so SEND, RECV, and CLOSE are missing.
