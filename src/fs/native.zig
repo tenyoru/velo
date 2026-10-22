@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const co = @import("../coroutines/root.zig");
-const io = @import("../io/root.zig");
+const io = @import("../event/root.zig");
+const Pool = @import("../workers/root.zig").Pool;
 const worker = @import("worker.zig");
 
 pub const ReadAt = Coroutine(.read_at, worker.ReadAt, usize);
@@ -13,7 +14,7 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
 
         const Self = @This();
 
-        pub fn init(pool: *io.WorkerPool, options: @FieldType(Worker, "action")) Self {
+        pub fn init(pool: *Pool, options: @FieldType(Worker, "action")) Self {
             return .{ .inner = .init(pool.loop, if (kind == .sync)
                 .{ .file = options.file }
             else

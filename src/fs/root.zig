@@ -14,7 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const co = @import("../coroutines/root.zig");
-const io = @import("../io/root.zig");
+const Pool = @import("../workers/root.zig").Pool;
 
 pub const worker = @import("worker.zig");
 pub const File = worker.File;
@@ -36,7 +36,7 @@ fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime
 
         const Self = @This();
 
-        pub fn init(pool: *io.WorkerPool, options: Options) Self {
+        pub fn init(pool: *Pool, options: Options) Self {
             if (@field(pool.loop.file_ops, capability) and
                 (if (builtin.os.tag == .windows) options.file.flags.nonblocking else true))
                 return .{ .native = Native.init(pool, options) };

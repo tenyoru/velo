@@ -49,45 +49,51 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/coroutines/Event.zig`, `Semaphore.zig`, `Channel.zig`: single-threaded FIFO
   primitives
 
-- `src/io/root.zig`: public aliases, backend selection, and lifetime contract
-- `src/io/Operation.zig`: shared operation state, typed coroutine wrappers,
+- `src/event/root.zig`: `velo.event`; loop, network operations, timers, backend
+  selection, and lifetime contract
+- `src/event/Operation.zig`: shared operation state, typed coroutine wrappers,
   cancellation, and completion accounting
-- `src/io/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`, and
+- `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`, and
   control forwarders; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
-- `src/io/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
+- `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation
-- `src/io/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
+- `src/event/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
   fd buckets, run queue, deadline treap
-- `src/io/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
+- `src/event/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
   software timers, kevent64 and capability-probed native AIO reads/writes
-- `src/io/backends/DarwinAio.zig`: Darwin AIO ABI bindings, zero-length completion
+- `src/event/backends/DarwinAio.zig`: Darwin AIO ABI bindings, zero-length completion
   probe, submission and rejection diagnostics; kevent delivery owns reaping
-- `src/io/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing
+- `src/event/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing
   WinAPI bindings
-- `src/io/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
+- `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
-- `src/io/WorkerPool.zig`: bounded blocking workers
-- `src/io/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+- `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
 
-- `src/fs/root.zig`: `velo.fs` (also `velo.io.fs`); operations select from
-  `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers
-- `src/fs/native.zig`: native file wrappers over shared `io.Operation`, filesystem errno mapping
+- `src/workers/root.zig`: `velo.workers`; exports the generic `Pool`
+- `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
+  completions and cancellation remain connected to the owning event loop
+- `src/workers/test.zig`: worker pool tests
+
+- `src/fs/root.zig`: `velo.fs`; operations select from
+  `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers;
+  `worker` exposes explicitly worker-backed operations
+- `src/fs/native.zig`: native file wrappers over shared `event.Operation`, filesystem errno mapping
+- `src/fs/worker.zig`: worker-backed file implementation using `workers.Pool.Work`,
+  exposed through `velo.fs.worker`
 - `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
   worker transfers use private event-tagged OVERLAPPEDs, never Threaded APCs
-- `src/fs/worker.zig`: WorkerPool file operations; `velo.fs.worker` forces them
 - `src/fs/test.zig`: forced uring/epoll/fallback, errno, cancellation, pressure, drain tests
 - `src/fs/test_windows.zig`, `test_macos.zig`: native platform file tests;
   macOS native cases explicitly skip when the AIO-to-kqueue probe fails
 
-- `src/io/tests/support.zig`: shared socket setup, short-transfer echo, deadlines,
+- `src/event/tests/support.zig`: shared socket setup, short-transfer echo, deadlines,
   loop driving, and drain checks
-- `src/io/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
-- `src/io/tests/portable.zig`: native socket/timer integration tests on all three OSes
-- `src/io/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
-- `src/io/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
+- `src/event/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
+- `src/event/tests/portable.zig`: native socket/timer integration tests on all three OSes
+- `src/event/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
+- `src/event/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
   stream-helper tests
-- `src/io/tests/worker_pool.zig`: worker pool tests
 
 - `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`; all except
   files carry tests

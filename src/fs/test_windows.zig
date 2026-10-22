@@ -1,9 +1,10 @@
 const std = @import("std");
-const io = @import("../io/root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
+const workers = @import("../workers/root.zig");
 const fs = @import("root.zig");
-const w = @import("../io/backends/win32.zig");
-const support = @import("../io/tests/support.zig");
+const w = @import("../event/backends/win32.zig");
+const support = @import("../event/tests/support.zig");
 const testing = std.testing;
 
 fn finish(loop: *io.Loop, frame: anytype) void {
@@ -13,7 +14,7 @@ fn finish(loop: *io.Loop, frame: anytype) void {
     frame.coroutine.deinit();
 }
 
-fn create(pool: *io.WorkerPool, dir: std.Io.Dir, path: []const u8) !fs.File {
+fn create(pool: *workers.Pool, dir: std.Io.Dir, path: []const u8) !fs.File {
     var frame: co.Frame(fs.Create) = .{
         .coroutine = .init(pool, .{ .dir = dir, .path = path, .flags = .{ .read = true } }),
     };
@@ -21,7 +22,7 @@ fn create(pool: *io.WorkerPool, dir: std.Io.Dir, path: []const u8) !fs.File {
     return frame.getResult();
 }
 
-fn drained(loop: *io.Loop, pool: *io.WorkerPool) !void {
+fn drained(loop: *io.Loop, pool: *workers.Pool) !void {
     try support.drained(loop);
     try testing.expectEqual(0, pool.outstanding);
     try testing.expectEqual(null, pool.queue.first);
@@ -46,7 +47,7 @@ test "windows filesystem ordinary handles select IOCP and preserve positional re
     defer tmp.cleanup();
     var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     const file = try create(&pool, tmp.dir, "native");
@@ -122,7 +123,7 @@ test "windows filesystem workers interoperate before and after IOCP association"
     defer tmp.cleanup();
     var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 2);
     defer pool.deinit();
     const file = try create(&pool, tmp.dir, "interop");
@@ -210,7 +211,7 @@ test "windows filesystem caller synchronous and special open handles stay on wor
     defer tmp.cleanup();
     var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     const file = try tmp.dir.createFile(testing.io, "sync", .{ .read = true });
@@ -264,7 +265,7 @@ test "windows filesystem caller synchronous and special open handles stay on wor
 }
 
 test "windows filesystem queued worker cancellation skips writes and claimed writes keep their result" {
-    const GatedWrite = io.WorkerPool.Work(struct {
+    const GatedWrite = workers.Pool.Work(struct {
         action: @FieldType(fs.worker.WriteAt, "action"),
         started: *std.Io.Event,
         release: *std.Io.Event,
@@ -279,7 +280,7 @@ test "windows filesystem queued worker cancellation skips writes and claimed wri
     defer tmp.cleanup();
     var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     const file = try create(&pool, tmp.dir, "worker cancel");
@@ -347,7 +348,7 @@ test "windows filesystem queued and inflight cancellation drain native packets i
             defer tmp.cleanup();
             var loop = try io.Loop.init(.{ .entries = 8 });
             defer loop.deinit();
-            var pool: io.WorkerPool = undefined;
+            var pool: workers.Pool = undefined;
             try pool.init(testing.allocator, &loop, 1);
             defer pool.deinit();
             const file = try create(&pool, tmp.dir, "cancel");

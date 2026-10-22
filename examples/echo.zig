@@ -1,7 +1,7 @@
 const std = @import("std");
 const velo = @import("velo");
 const co = velo.coroutines;
-const io = velo.io;
+const io = velo.event;
 
 const Handler = struct {
     loop: *io.Loop,
@@ -113,7 +113,7 @@ const Input = struct {
 
 const Stopper = struct {
     loop: *io.Loop,
-    input: io.WorkerPool.Work(Input),
+    input: velo.workers.Pool.Work(Input),
 
     pub fn poll(self: *@This(), task: *co.Task) co.Poll(anyerror!void) {
         const result = switch (self.input.poll(task)) {
@@ -148,7 +148,7 @@ pub fn main(init: std.process.Init) !void {
     try io.listen(listener, 16);
     try io.localAddress(listener, @ptrCast(&address), &len);
 
-    var pool: io.WorkerPool = undefined;
+    var pool: velo.workers.Pool = undefined;
     try pool.init(init.gpa, &loop, 1);
     defer pool.deinit();
 

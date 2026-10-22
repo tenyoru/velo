@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const velo = @import("velo");
 const co = velo.coroutines;
-const io = velo.io;
+const io = velo.event;
 
 const max_shards = 64;
 const Mode = enum { auto, epoll };

@@ -1,7 +1,8 @@
 //! velo: stackless coroutines and I/O.
 
 pub const coroutines = @import("coroutines/root.zig");
-pub const io = @import("io/root.zig");
+pub const event = @import("event/root.zig");
+pub const workers = @import("workers/root.zig");
 pub const fs = @import("fs/root.zig");
 
 test {
@@ -10,14 +11,14 @@ test {
     testing.refAllDecls(@This());
 
     inline for (.{
-        io.Loop,
-        io.Connect,
-        io.Accept,
-        io.Send,
-        io.Recv,
-        io.SendTo,
-        io.RecvFrom,
-        io.Close,
-        io.Timeout,
+        event.Loop,
+        event.Connect,
+        event.Accept,
+        event.Send,
+        event.Recv,
+        event.SendTo,
+        event.RecvFrom,
+        event.Close,
+        event.Timeout,
     }) |T| testing.refAllDecls(T);
 }

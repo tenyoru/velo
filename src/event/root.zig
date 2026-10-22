@@ -11,7 +11,7 @@
 //! Shutdown: request shutdown(), then drive run() until drained. If a persistent
 //! backend failure prevents draining, abort rather than unwind borrowed storage.
 //!
-//! Deadlines are absolute in io.now()'s clock; Timeout durations start on activation.
+//! Deadlines are absolute in event.now()'s clock; Timeout durations start on activation.
 //! Recv returning zero means EOF; RecvFrom returning zero is an empty datagram.
 //! Streams may transfer short counts; oversized datagrams fail with MessageTooBig.
 //! A truncated datagram is consumed; peer outputs are unspecified on error.
@@ -29,7 +29,7 @@ pub const backend = switch (builtin.os.tag) {
     .linux => @import("backends/Uring.zig"),
     .macos => @import("backends/Kqueue.zig"),
     .windows => @import("backends/Iocp.zig"),
-    else => @compileError("velo.io supports Linux, macOS, and Windows"),
+    else => @compileError("velo.event supports Linux, macOS, and Windows"),
 };
 pub const Loop = backend.Loop;
 pub const LoopOptions = struct {
@@ -38,8 +38,6 @@ pub const LoopOptions = struct {
 };
 
 pub const Control = @import("Control.zig");
-pub const WorkerPool = @import("WorkerPool.zig");
-pub const fs = @import("../fs/root.zig");
 pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
 
@@ -100,6 +98,5 @@ test {
     if (builtin.os.tag == .linux) _ = @import("tests/uring.zig");
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
-    _ = @import("tests/worker_pool.zig");
     _ = @import("tests/runtime.zig");
 }

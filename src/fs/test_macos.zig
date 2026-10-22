@@ -1,9 +1,10 @@
 const std = @import("std");
-const io = @import("../io/root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
+const workers = @import("../workers/root.zig");
 const fs = @import("root.zig");
-const support = @import("../io/tests/support.zig");
-const DarwinAio = @import("../io/backends/DarwinAio.zig");
+const support = @import("../event/tests/support.zig");
+const DarwinAio = @import("../event/backends/DarwinAio.zig");
 const testing = std.testing;
 
 fn nativeLoop(entries: u16) !io.Loop {
@@ -46,7 +47,7 @@ test "macOS filesystem forced worker fallback roundtrip" {
     var loop = try io.Loop.init(.{ .entries = 2 });
     defer loop.deinit();
     loop.file_ops = .{};
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var tmp = testing.tmpDir(.{});
@@ -79,7 +80,7 @@ test "macOS filesystem forced worker fallback roundtrip" {
 test "macOS native positional roundtrip offsets EOF empty and dispatch" {
     var loop = try nativeLoop(2);
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var tmp = testing.tmpDir(.{});
@@ -150,7 +151,7 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
 test "macOS native rejection preserves access descriptor stream and offset errors" {
     var loop = try nativeLoop(2);
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var tmp = testing.tmpDir(.{});
@@ -209,7 +210,7 @@ test "macOS native rejection preserves access descriptor stream and offset error
 test "macOS native bounded same-file requests coexist with socket and timer events" {
     var loop = try nativeLoop(2);
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var tmp = testing.tmpDir(.{});
@@ -263,7 +264,7 @@ test "macOS native bounded same-file requests coexist with socket and timer even
 test "macOS native cancellation before submission acquires no AIO ownership" {
     var loop = try nativeLoop(2);
     defer loop.deinit();
-    var pool: io.WorkerPool = undefined;
+    var pool: workers.Pool = undefined;
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var tmp = testing.tmpDir(.{});

@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const velo = @import("velo");
 const co = velo.coroutines;
-const io = velo.io;
+const io = velo.event;
 const testing = std.testing;
 
 const Mailbox = struct {
@@ -84,12 +84,12 @@ const Action = struct {
 
 const Flusher = struct {
     mailbox: *Mailbox,
-    pool: *io.WorkerPool,
+    pool: *velo.workers.Pool,
     sink: *Sink,
     timer: ?io.Timeout = null,
     timer_deadline: i128 = 0,
     timer_canceling: bool = false,
-    work: ?io.WorkerPool.Work(Action) = null,
+    work: ?velo.workers.Pool.Work(Action) = null,
     flushed: u64 = 0,
     jobs: usize = 0,
     timer_starts: usize = 0,
@@ -188,7 +188,7 @@ const Flusher = struct {
                     .nsec = @intCast(@mod(remaining, 1_000_000_000)),
                 } });
             } else {
-                self.work = io.WorkerPool.Work(Action).init(self.pool, .{
+                self.work = velo.workers.Pool.Work(Action).init(self.pool, .{
                     .sink = self.sink,
                     .generation = mailbox.generation,
                 });
@@ -233,7 +233,7 @@ const Producer = struct {
 const Summary = struct { generation: u64, jobs: usize };
 
 fn exercise(loop: *io.Loop, allocator: std.mem.Allocator, std_io: std.Io) ![2]Summary {
-    var pool: io.WorkerPool = undefined;
+    var pool: velo.workers.Pool = undefined;
     try pool.init(allocator, loop, 2);
     defer pool.deinit();
     var mailboxes: [2]Mailbox = undefined;
@@ -316,7 +316,7 @@ const Observed = struct {
 
 const Harness = struct {
     loop: io.Loop,
-    pool: io.WorkerPool,
+    pool: velo.workers.Pool,
     mailboxes: [2]Mailbox,
     sinks: [2]Sink,
     frames: [2]co.Frame(Observed),

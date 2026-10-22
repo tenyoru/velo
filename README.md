@@ -5,7 +5,7 @@ machines: nothing switches stacks.
 
 - **Coroutines:** executor, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
-- **Threads:** cross-thread posts into a loop; fixed-size `WorkerPool` for blocking work
+- **Threads:** cross-thread posts into a loop; fixed-size `workers.Pool` for blocking work
 - **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
   (macOS), or overlapped IOCP (Windows), with worker fallback; sync uses io_uring
   or workers, and open/create/close use workers
@@ -22,7 +22,7 @@ flowchart LR
         control["Control"] -->|wake tasks| executor
     end
 
-    frames -->|blocking work| workers["WorkerPool"]
+    frames -->|blocking work| workers["workers.Pool"]
     workers -->|completion post| control
     threads["Other threads"] -->|post| control
 ```
@@ -31,10 +31,13 @@ flowchart LR
   returns `.pending` to yield or `.ready` to finish; `Task.wake()` schedules another poll.
 - `Loop` drives the executor and native socket, timer, and file operations.
   I/O completions wake waiting tasks.
-- `Control` runs posted callbacks on the loop thread. `WorkerPool` executes blocking
+- `Control` runs posted callbacks on the loop thread. `workers.Pool` executes blocking
   actions on worker threads and posts completions back to that loop.
 - The executor also works without I/O. Independent loops can run on separate threads,
   each owning its tasks and communicating through posts.
+
+Public modules: `velo.coroutines`, `velo.event`, `velo.workers`, and `velo.fs`.
+`velo.fs.worker` exposes explicitly worker-backed file operations.
 
 ## Usage
 
@@ -53,11 +56,11 @@ const std = @import("std");
 const velo = @import("velo");
 
 pub fn main() !void {
-    var loop = try velo.io.Loop.init(.{});
+    var loop = try velo.event.Loop.init(.{});
     defer loop.deinit();
 
-    var timer: velo.coroutines.Frame(velo.io.Timeout) = .{
-        .coroutine = velo.io.Timeout.init(&loop, .{
+    var timer: velo.coroutines.Frame(velo.event.Timeout) = .{
+        .coroutine = velo.event.Timeout.init(&loop, .{
             .duration = .{ .sec = 0, .nsec = 1_000_000 },
         }),
     };
@@ -80,7 +83,7 @@ pub fn main() !void {
 - A loop belongs to one thread. Other threads may call only `post`, `retain`,
   `release`, `stop`, and `shutdown`.
 - The full contracts are doc comments; start with `src/coroutines/root.zig`
-  and `src/io/root.zig`.
+  and `src/event/root.zig`.
 
 ## Examples
 

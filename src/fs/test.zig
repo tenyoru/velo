@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const io = @import("../io/root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
-const WorkerPool = io.WorkerPool;
+const workers = @import("../workers/root.zig");
+const WorkerPool = workers.Pool;
 const fs = @import("root.zig");
-const support = @import("../io/tests/support.zig");
+const support = @import("../event/tests/support.zig");
 const testing = std.testing;
 
 fn finish(loop: *io.Loop, frame: anytype) void {
@@ -583,7 +584,7 @@ test "filesystem native cancellation and shutdown retain both CQEs and successfu
 
             loop.cancellations.remove(&op.node);
             op.native.uring.cancel = .submitted;
-            @import("../io/backends/Uring.zig").cancelComplete(op);
+            @import("../event/backends/Uring.zig").cancelComplete(op);
             if (cancel_first) {
                 try testing.expectEqual(.inflight, op.state);
                 try testing.expectEqual(null, loop.executor.ready.first);

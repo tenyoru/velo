@@ -1,7 +1,7 @@
 const std = @import("std");
 const velo = @import("velo");
 const co = velo.coroutines;
-const io = velo.io;
+const io = velo.event;
 const Channel = co.Channel(u32);
 
 // Returning .pending unwinds poll(), so its next call needs a stored resume state.

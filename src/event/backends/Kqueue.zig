@@ -787,13 +787,14 @@ test "kqueue datagrams report truncation and accept empty messages" {
 
 test "kqueue accepted AIO survives cancellation and shutdown until original completion" {
     const fs = @import("../../fs/root.zig");
+    const Pool = @import("../../workers/Pool.zig");
     const support = @import("../tests/support.zig");
     const testing = std.testing;
     for ([_]bool{ false, true }) |shutdown| {
         var loop = try Loop.init(.{ .entries = 2 });
         defer loop.deinit();
         if (!loop.file_ops.read or !loop.file_ops.write) return error.SkipZigTest;
-        var pool: io.WorkerPool = undefined;
+        var pool: Pool = undefined;
         try pool.init(testing.allocator, &loop, 1);
         defer pool.deinit();
         var tmp = testing.tmpDir(.{});

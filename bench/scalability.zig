@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const velo = @import("velo");
 const co = velo.coroutines;
-const io = velo.io;
+const io = velo.event;
 
 const Backend = enum { auto, uring, epoll };
 const Workload = enum { @"idle-recv", @"idle-deadline", @"idle-timeout", @"same-fd", @"expire-one", @"expire-all" };

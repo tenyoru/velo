@@ -1,6 +1,6 @@
 const std = @import("std");
-const io = @import("../io/root.zig");
-const w = @import("../io/backends/win32.zig");
+const io = @import("../event/root.zig");
+const w = @import("../event/backends/win32.zig");
 
 pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool) std.Io.File {
     if (w.GetFileType(file.handle) != 1) return file;

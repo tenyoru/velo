@@ -4,8 +4,8 @@
 const std = @import("std");
 
 const co = @import("../coroutines/root.zig");
-const Control = @import("Control.zig");
-const Loop = @import("root.zig").Loop;
+const Control = @import("../event/Control.zig");
+const Loop = @import("../event/root.zig").Loop;
 const states = @import("../state.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 

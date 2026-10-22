@@ -1,4 +1,4 @@
-//! WorkerPool-backed file I/O; pin paths/buffers until ready, even after cancel.
+//! Pool-backed file I/O; pin paths/buffers until ready, even after cancel.
 //! Returned handles remain caller-owned. Close only after all I/O on the handle;
 //! a canceled task's Close never runs, so use File.close in cleanup.
 //! WriteAt may be short; durability needs Sync, not just WriteAt or Close.
@@ -7,11 +7,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const WorkerPool = @import("../io/WorkerPool.zig");
+const workers = @import("../workers/root.zig");
 
 pub const File = std.Io.File;
 
-pub const Open = WorkerPool.Work(struct {
+pub const Open = workers.Pool.Work(struct {
     dir: std.Io.Dir,
     path: []const u8,
     flags: std.Io.Dir.OpenFileOptions = .{},
@@ -24,7 +24,7 @@ pub const Open = WorkerPool.Work(struct {
     }
 });
 
-pub const Create = WorkerPool.Work(struct {
+pub const Create = workers.Pool.Work(struct {
     dir: std.Io.Dir,
     path: []const u8,
     flags: std.Io.Dir.CreateFileOptions = .{},
@@ -37,7 +37,7 @@ pub const Create = WorkerPool.Work(struct {
     }
 });
 
-pub const ReadAt = WorkerPool.Work(struct {
+pub const ReadAt = workers.Pool.Work(struct {
     file: File,
     buffer: []u8,
     offset: u64 = 0,
@@ -50,7 +50,7 @@ pub const ReadAt = WorkerPool.Work(struct {
     }
 });
 
-pub const WriteAt = WorkerPool.Work(struct {
+pub const WriteAt = workers.Pool.Work(struct {
     file: File,
     buffer: []const u8,
     offset: u64 = 0,
@@ -63,7 +63,7 @@ pub const WriteAt = WorkerPool.Work(struct {
     }
 });
 
-pub const Sync = WorkerPool.Work(struct {
+pub const Sync = workers.Pool.Work(struct {
     file: File,
 
     pub fn run(self: *@This(), io: std.Io) anyerror!void {
@@ -73,7 +73,7 @@ pub const Sync = WorkerPool.Work(struct {
     }
 });
 
-pub const Close = WorkerPool.Work(struct {
+pub const Close = workers.Pool.Work(struct {
     file: File,
 
     pub fn run(self: *@This(), io: std.Io) error{}!void {

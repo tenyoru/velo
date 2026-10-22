@@ -1,8 +1,8 @@
 const std = @import("std");
-const io = @import("../root.zig");
-const co = @import("../../coroutines/root.zig");
-const WorkerPool = @import("../WorkerPool.zig");
-const support = @import("support.zig");
+const io = @import("../event/root.zig");
+const co = @import("../coroutines/root.zig");
+const WorkerPool = @import("Pool.zig");
+const support = @import("../event/tests/support.zig");
 const testing = std.testing;
 
 const Gated = struct {
