@@ -145,6 +145,8 @@ const Sender = struct {
 
     pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
         const config = self.shard.coordinator.config;
+        if (self.shard.first_poll == null)
+            self.shard.first_poll = std.Io.Clock.awake.now(self.shard.coordinator.std_io);
         if (!self.request.active) {
             self.request.id = self.shard.index * config.requests + self.consumed;
             self.request.key = self.request.id;
@@ -181,13 +183,13 @@ const Sender = struct {
 };
 
 const Shard = struct {
-    loop: io.Loop,
+    loop: *io.Loop = undefined,
     coordinator: *Coordinator,
     index: usize,
     frame: co.Frame(Sender) = .{ .coroutine = .{} },
     done: std.Io.Event = .unset,
-    thread: ?std.Thread = null,
     thread_id: std.Thread.Id = undefined,
+    first_poll: ?std.Io.Timestamp = null,
     accepted: usize = 0,
     received: usize = 0,
     responses: usize = 0,
@@ -196,32 +198,32 @@ const Shard = struct {
     held: ?*Request = null,
     borrow_held: bool = false,
     bad: bool = false,
-
-    fn run(self: *@This()) void {
-        self.thread_id = std.Thread.getCurrentId();
-        self.coordinator.start.waitUncancelable(self.coordinator.std_io);
-        if (!self.coordinator.abort) self.loop.executor.spawn(&self.frame.task);
-        // Backend errors cannot unwind storage borrowed by another loop.
-        self.loop.run() catch |err| std.debug.panic("shard loop failed: {s}", .{@errorName(err)});
-    }
 };
 
 const Coordinator = struct {
     config: Config,
     std_io: std.Io,
     shards: []Shard,
-    start: std.Io.Event = .unset,
-    abort: bool = false,
+    group: velo.workers.Group = undefined,
     held: std.Io.Event = .unset,
     cancel_parked: std.Io.Event = .unset,
     cancel_post: io.Control.Post = .{ .callback = cancelSource },
     resume_post: io.Control.Post = .{ .callback = resumeReply },
 
+    fn entry(self: *@This(), loop: *io.Loop, index: usize) error{ThreadStartFailed}!void {
+        const shard = &self.shards[index];
+        shard.loop = loop;
+        shard.thread_id = std.Thread.getCurrentId();
+        if (self.config.fail_after == index) return error.ThreadStartFailed;
+        if (self.config.scenario == .closed and index == 0) loop.shutdown();
+        loop.executor.spawn(&shard.frame.task);
+    }
+
     fn cancelSource(post: *io.Control.Post) void {
         const self: *@This() = @fieldParentPtr("cancel_post", post);
         const source = &self.shards[0];
         if (self.config.scenario == .shutdown_all) {
-            for (self.shards) |*shard| shard.loop.shutdown();
+            self.group.shutdown();
         } else if (self.config.scenario == .shutdown) source.loop.shutdown() else source.frame.cancel();
     }
 
@@ -245,14 +247,9 @@ const Result = struct {
     mean_round_trip_ns: u64 = 0,
 };
 
+// Loops are gone by now; their own deinit asserts they drained.
 fn drained(shard: *const Shard) !void {
-    const loop = &shard.loop;
-    if (shard.held != null or shard.frame.task.outstanding_io != 0 or
-        loop.executor.all_tasks.first != null or loop.executor.ready.first != null or
-        loop.pending.first != null or loop.control.registrations.first != null or
-        loop.active != 0 or loop.control.head.load(.acquire) != null or
-        loop.control.references.load(.acquire) != 0 or loop.running)
-        return error.LoopNotDrained;
+    if (shard.held != null or shard.frame.task.outstanding_io != 0) return error.LoopNotDrained;
 }
 
 fn exercise(allocator: std.mem.Allocator, std_io: std.Io, config: Config) !Result {
@@ -263,44 +260,22 @@ fn exercise(allocator: std.mem.Allocator, std_io: std.Io, config: Config) !Resul
     const shards = try allocator.alloc(Shard, config.shards);
     defer allocator.free(shards);
     var coordinator: Coordinator = .{ .config = config, .std_io = std_io, .shards = shards };
-    var initialized: usize = 0;
-    defer for (shards[0..initialized]) |*shard| shard.loop.deinit();
     for (shards, 0..) |*shard, index| {
-        shard.* = .{
-            .loop = if (builtin.os.tag == .linux)
-                try io.Loop.initWithBackend(.{ .entries = 8 }, if (config.mode == .epoll) .epoll else .auto)
-            else
-                try io.Loop.init(.{ .entries = 8 }),
-            .coordinator = &coordinator,
-            .index = index,
-        };
+        shard.* = .{ .coordinator = &coordinator, .index = index };
         shard.frame.coroutine.shard = shard;
         shard.frame.coroutine.request.source = shard;
-        initialized += 1;
     }
 
-    // Every destination stays alive until every producer has consumed its last reply.
-    for (shards) |*shard| shard.loop.retain();
-    for (shards, 0..) |*shard, index| {
-        shard.thread = (if (config.fail_after == index)
-            error.ThreadStartFailed
-        else
-            std.Thread.spawn(.{}, Shard.run, .{shard})) catch |err| {
-            coordinator.abort = true;
-            for (shards) |*peer| {
-                peer.loop.shutdown();
-                peer.loop.release();
-            }
-            coordinator.start.set(std_io);
-            for (shards[0..index]) |*peer| peer.thread.?.join();
-            for (shards) |*peer| try drained(peer);
-            return err;
-        };
-    }
+    // The group keeps every destination alive until every producer has consumed its last reply.
+    coordinator.group.init(allocator, .{
+        .count = config.shards,
+        .loop = .{ .entries = 8 },
+        .backend = if (builtin.os.tag == .linux and config.mode == .epoll) .epoll else .auto,
+    }, &coordinator, Coordinator.entry) catch |err| {
+        for (shards) |*shard| try drained(shard);
+        return err;
+    };
 
-    if (config.scenario == .closed) shards[0].loop.shutdown();
-    const started = std.Io.Clock.awake.now(std_io);
-    coordinator.start.set(std_io);
     if (holdsReply(config.scenario)) {
         coordinator.held.waitUncancelable(std_io);
         shards[0].loop.post(&coordinator.cancel_post);
@@ -309,12 +284,15 @@ fn exercise(allocator: std.mem.Allocator, std_io: std.Io, config: Config) !Resul
     }
     for (shards) |*shard| shard.done.waitUncancelable(std_io);
     const finished = std.Io.Clock.awake.now(std_io);
-    for (shards) |*shard| {
-        shard.loop.shutdown();
-        shard.loop.release();
-    }
-    for (shards) |*shard| shard.thread.?.join();
+    coordinator.group.shutdown();
+    coordinator.group.deinit();
 
+    // Thread spawn and loop setup stay out of the throughput window.
+    var started = finished;
+    for (shards) |*shard| {
+        const first = shard.first_poll.?;
+        if (first.nanoseconds < started.nanoseconds) started = first;
+    }
     var result: Result = .{
         .elapsed_ns = @intCast(started.durationTo(finished).nanoseconds),
         .drain_ns = @intCast(finished.durationTo(std.Io.Clock.awake.now(std_io)).nanoseconds),

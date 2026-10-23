@@ -106,8 +106,9 @@ stackful fibers), so coroutines here are explicit state machines.
   selection and forced epoll on Linux
 - `examples/flusher.zig`: synchronized deadline mailbox, generation snapshots,
   timer rearm and graceful/canceled worker drain
-- `examples/shards.zig`: bounded cross-loop requests, pinned replies and coordinated
-  shutdown; optional shard count, requests per shard and Linux epoll selection
+- `examples/shards.zig`: bounded cross-loop requests over `workers.Group`, pinned
+  replies and coordinated shutdown; optional shard count, requests per shard and
+  Linux epoll selection
 - `bench/scalability.zig`: portable TCP/timer workloads with separate admission,
   fixed ready work, expiration, cancellation and drain timings; included in test/check
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in

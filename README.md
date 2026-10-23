@@ -96,7 +96,7 @@ zig build run-pipeline                 # Channel and Join over a bounded buffer
 zig build run-echo                     # TCP echo server; press Enter to stop
 zig build run-files -- /tmp/velo-demo  # create, write, sync, and read a file
 zig build run-flusher                  # coalesced deadlines and graceful worker drain
-zig build run-shards -- 4 10000         # bounded request/reply across four loops
+zig build run-shards -- 4 10000         # bounded request/reply across a four-loop Group
 ```
 
 `flusher` closes admission and finishes pending generations before global shutdown;
