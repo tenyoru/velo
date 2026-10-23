@@ -88,6 +88,7 @@ pub const Data = union(Kind) {
     },
     sync: struct {
         file: std.Io.File,
+        data_only: bool = false,
     },
 };
 

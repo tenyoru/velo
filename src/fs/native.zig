@@ -16,7 +16,7 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
 
         pub fn init(pool: *Pool, options: @FieldType(Worker, "action")) Self {
             return .{ .inner = .init(pool.loop, if (kind == .sync)
-                .{ .file = options.file }
+                .{ .file = options.file, .data_only = options.data_only }
             else
                 .{ .file = options.file, .buffer = options.buffer, .offset = options.offset }) };
         }

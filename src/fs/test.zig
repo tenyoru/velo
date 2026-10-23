@@ -84,6 +84,14 @@ fn roundtrip(loop: *io.Loop) !void {
 
     try sync.getResult();
 
+    var data_sync: co.Frame(fs.Sync) = .{
+        .coroutine = fs.Sync.init(&pool, .{ .file = file, .data_only = true }),
+    };
+
+    finish(loop, &data_sync);
+
+    try data_sync.getResult();
+
     var buffer: [64]u8 = undefined;
     var read: co.Frame(fs.ReadAt) = .{
         .coroutine = fs.ReadAt.init(&pool, .{
@@ -272,6 +280,54 @@ test "filesystem sync propagates the standard I/O durability error" {
         error.InputOutput,
         sync.action.run(.{ .vtable = &vtable, .userdata = null }),
     );
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(testing.io, "data", .{});
+    defer file.close(testing.io);
+    var data_sync = fs.worker.Sync.init(&pool, .{ .file = file, .data_only = true });
+    const failing: std.Io = .{ .vtable = &vtable, .userdata = null };
+    if (builtin.os.tag != .linux) {
+        try testing.expectError(error.InputOutput, data_sync.action.run(failing));
+        return;
+    }
+
+    // Linux bypasses std's fsync, so the injected failure must not surface.
+    try data_sync.action.run(failing);
+    const full = try std.Io.Dir.cwd().openFile(testing.io, "/dev/full", .{ .mode = .write_only });
+    defer full.close(testing.io);
+    data_sync = fs.worker.Sync.init(&pool, .{ .file = full, .data_only = true });
+    try testing.expectError(error.InvalidArgument, data_sync.action.run(failing));
+}
+
+test "filesystem data-only sync submits a datasync fsync SQE" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const linux = std.os.linux;
+
+    for ([_]bool{ false, true }) |data_only| {
+        var loop = simulatedLoop();
+        var pool: WorkerPool = undefined;
+        pool.loop = &loop;
+        pool.outstanding = 0;
+        var frame: co.Frame(fs.Sync) = .{
+            .coroutine = .init(&pool, .{ .file = .stdout(), .data_only = data_only }),
+        };
+        try testing.expect(frame.coroutine == .native);
+        loop.executor.spawn(&frame.task);
+        loop.executor.run();
+        const op = &frame.coroutine.native.inner.operation;
+        loop.pending.remove(&op.node);
+        var sqe: linux.io_uring_sqe = undefined;
+        op.prepare(&sqe, null);
+        try testing.expectEqual(linux.IORING_OP.FSYNC, sqe.opcode);
+        try testing.expectEqual(@as(u32, if (data_only) linux.IORING_FSYNC_DATASYNC else 0), sqe.rw_flags);
+
+        op.complete(false, 0);
+        loop.executor.run();
+        try frame.getResult();
+        frame.coroutine.deinit();
+        try support.drained(&loop);
+    }
 }
 
 fn nativeLoop(entries: u16) !io.Loop {

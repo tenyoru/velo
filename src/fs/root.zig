@@ -4,6 +4,8 @@
 //! Canceled tasks skip Close, so use File.close in cleanup. Transfers may be short;
 //! read returning zero means EOF or an empty buffer. Offsets must fit a signed 64-bit value.
 //! Consume writes before Sync for full file-data/metadata durability, not directory entries.
+//! `data_only` Sync (Linux fdatasync) skips metadata not needed to read the data back,
+//! such as timestamps; other platforms run a full Sync.
 //! Native reads/writes use io_uring, probed Darwin AIO/kqueue, or overlapped IOCP.
 //! Sync uses workers outside io_uring; Open/Create/Close always use workers.
 //! Windows Open/Create request asynchronous handles for unlocked regular files;

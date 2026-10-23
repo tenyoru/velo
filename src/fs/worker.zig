@@ -80,10 +80,21 @@ pub const WriteAt = workers.Pool.Work(struct {
 
 pub const Sync = workers.Pool.Work(struct {
     file: File,
+    data_only: bool = false,
 
     pub fn run(self: *@This(), io: std.Io) anyerror!void {
         if (builtin.os.tag == .windows and self.file.flags.nonblocking)
             return @import("windows.zig").sync(self.file);
+        if (builtin.os.tag == .linux and self.data_only) {
+            const linux = std.os.linux;
+            while (true) {
+                switch (linux.errno(linux.fdatasync(self.file.handle))) {
+                    .SUCCESS => return,
+                    .INTR => continue,
+                    else => |err| return @import("native.zig").mapError(.sync, err),
+                }
+            }
+        }
         return self.file.sync(io);
     }
 });

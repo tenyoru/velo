@@ -149,7 +149,7 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
         .timeout => sqe.prep_timeout(&op.time, 0, 0),
         .read_at => |v| sqe.prep_read(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
         .write_at => |v| sqe.prep_write(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
-        .sync => |v| sqe.prep_fsync(v.file.handle, 0),
+        .sync => |v| sqe.prep_fsync(v.file.handle, if (v.data_only) linux.IORING_FSYNC_DATASYNC else 0),
     }
 
     // Match the submitted, clamped range rather than the caller's full slice.
