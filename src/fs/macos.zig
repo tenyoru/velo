@@ -53,7 +53,10 @@ pub fn allocate(io: std.Io, file: std.Io.File, end: u64) !void {
             else => |err| return native.mapError(.write_at, err),
         }
 
-        if (extent.device_offset < 0 or extent.contiguous <= 0) return error.UnsupportedOperation;
+        if (extent.device_offset < 0 or extent.contiguous <= 0) {
+            if (@import("builtin").is_test) std.debug.print("allocation mapping: size={d} end={d} offset={d} device={d} contiguous={d}\n", .{ stat.size, end, offset, extent.device_offset, extent.contiguous });
+            return error.UnsupportedOperation;
+        }
         offset += @min(stat.size - offset, @as(u64, @intCast(extent.contiguous)));
     }
     if (end <= stat.size) return;
@@ -66,7 +69,10 @@ pub fn allocate(io: std.Io, file: std.Io.File, end: u64) !void {
             else => |err| return native.mapError(.write_at, err),
         }
     }
-    if (store.bytes_allocated < store.length) return error.UnsupportedOperation;
+    if (store.bytes_allocated < store.length) {
+        if (@import("builtin").is_test) std.debug.print("allocation reservation: size={d} end={d} requested={d} allocated={d}\n", .{ stat.size, end, store.length, store.bytes_allocated });
+        return error.UnsupportedOperation;
+    }
 
     while (true) {
         switch (std.c.errno(std.c.ftruncate(file.handle, @intCast(end)))) {

@@ -374,7 +374,10 @@ test "filesystem Allocate reserves grows preserves data and never shrinks" {
 
             finish(&loop, &allocate);
 
-            try allocate.getResult();
+            allocate.getResult() catch |err| {
+                std.debug.print("Allocate offset={d} len={d} expected_size={d}: {s}\n", .{ case.offset, case.len, case.expected_size, @errorName(err) });
+                return err;
+            };
             try testing.expectEqual(case.expected_size, (try file.stat(testing.io)).size);
         }
 
