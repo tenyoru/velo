@@ -506,6 +506,18 @@ test "macOS Allocate rejects existing holes instead of reserving unrelated physi
     try testing.expectError(error.UnsupportedOperation, allocate.getResult());
     try testing.expectEqual(size, (try file.stat(testing.io)).size);
 
+    // A hole outside a non-growing request must not invalidate that request.
+    for ([_]u64{ 3, size - 8 }) |offset| {
+        allocate = .{ .coroutine = .init(&pool, .{ .file = file, .offset = offset, .len = 5 }) };
+        finish(&loop, &allocate);
+        try allocate.getResult();
+        try testing.expectEqual(size, (try file.stat(testing.io)).size);
+    }
+    allocate = .{ .coroutine = .init(&pool, .{ .file = file, .offset = size / 4, .len = 5 }) };
+    finish(&loop, &allocate);
+    try testing.expectError(error.UnsupportedOperation, allocate.getResult());
+    try testing.expectEqual(size, (try file.stat(testing.io)).size);
+
     var tail: [1]u8 = undefined;
     try testing.expectEqual(1, try file.readPositional(testing.io, &.{&tail}, size - 1));
     try testing.expectEqual(0x5a, tail[0]);

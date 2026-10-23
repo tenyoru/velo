@@ -33,16 +33,17 @@ pub fn setDirect(file: std.Io.File) !void {
     }
 }
 
-pub fn allocate(io: std.Io, file: std.Io.File, end: u64) !void {
+pub fn allocate(io: std.Io, file: std.Io.File, start: u64, end: u64) !void {
     const stat = try file.stat(io);
     if (stat.kind != .file) return error.UnsupportedOperation;
     if (stat.size > std.math.maxInt(i64)) return error.InvalidArgument;
 
-    // F_PREALLOCATE appends at physical EOF; it cannot promise to fill existing holes.
-    var offset: u64 = 0;
-    while (offset < stat.size) {
+    // Growth uses physical EOF, so validate the whole prefix; otherwise only the requested range matters.
+    var offset: u64 = if (end > stat.size) 0 else start;
+    const limit = @min(end, stat.size);
+    while (offset < limit) {
         var extent: PhysicalExtent = .{
-            .contiguous = @intCast(stat.size - offset),
+            .contiguous = @intCast(limit - offset),
             .device_offset = @intCast(offset),
         };
         const rc = std.c.fcntl(file.handle, std.c.F.LOG2PHYS_EXT, @intFromPtr(&extent));
@@ -53,11 +54,8 @@ pub fn allocate(io: std.Io, file: std.Io.File, end: u64) !void {
             else => |err| return native.mapError(.write_at, err),
         }
 
-        if (extent.device_offset < 0 or extent.contiguous <= 0) {
-            if (@import("builtin").is_test) std.debug.print("allocation mapping: size={d} end={d} offset={d} device={d} contiguous={d}\n", .{ stat.size, end, offset, extent.device_offset, extent.contiguous });
-            return error.UnsupportedOperation;
-        }
-        offset += @min(stat.size - offset, @as(u64, @intCast(extent.contiguous)));
+        if (extent.device_offset < 0 or extent.contiguous <= 0) return error.UnsupportedOperation;
+        offset += @min(limit - offset, @as(u64, @intCast(extent.contiguous)));
     }
     if (end <= stat.size) return;
 
@@ -69,10 +67,7 @@ pub fn allocate(io: std.Io, file: std.Io.File, end: u64) !void {
             else => |err| return native.mapError(.write_at, err),
         }
     }
-    if (store.bytes_allocated < store.length) {
-        if (@import("builtin").is_test) std.debug.print("allocation reservation: size={d} end={d} requested={d} allocated={d}\n", .{ stat.size, end, store.length, store.bytes_allocated });
-        return error.UnsupportedOperation;
-    }
+    if (store.bytes_allocated < store.length) return error.UnsupportedOperation;
 
     while (true) {
         switch (std.c.errno(std.c.ftruncate(file.handle, @intCast(end)))) {

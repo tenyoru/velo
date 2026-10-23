@@ -124,7 +124,7 @@ pub const Allocate = workers.Pool.Work(struct {
 
         switch (builtin.os.tag) {
             .linux => return linux.allocate(self.file, self.offset, self.len),
-            .macos => return macos.allocate(io, self.file, self.offset + self.len),
+            .macos => return macos.allocate(io, self.file, self.offset, self.offset + self.len),
             .windows => return windows.allocate(self.file, self.offset + self.len),
             else => return error.UnsupportedOperation,
         }

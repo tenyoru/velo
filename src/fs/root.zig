@@ -26,9 +26,9 @@
 //! offset+len must fit i64; len=0 does no I/O after validation. No zero-write emulation.
 //! Exclude concurrent resize, hole punching or allocation changes on the file.
 //! Failures may leave increased allocation or EOF behind.
-//! Windows sparse/compressed files are unsupported. macOS requires existing data
-//! through EOF to have queryable physical extents: holes or unavailable mappings
-//! are unsupported because F_PREALLOCATE only extends from physical EOF.
+//! Windows sparse/compressed files are unsupported. macOS requires queryable physical
+//! extents in the requested existing range; growth requires them throughout the existing
+//! file because F_PREALLOCATE extends from physical EOF. Holes/unavailable mappings are unsupported.
 
 const std = @import("std");
 const builtin = @import("builtin");
