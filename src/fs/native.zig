@@ -42,7 +42,7 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
     };
 }
 
-fn mapError(comptime kind: io.Kind, e: io.NativeError) anyerror {
+pub fn mapError(comptime kind: io.Kind, e: io.NativeError) anyerror {
     if (builtin.os.tag == .windows) return @import("windows.zig").mapError(kind, e);
     return switch (e) {
         .CANCELED => error.OperationCanceled,

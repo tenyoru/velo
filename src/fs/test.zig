@@ -679,3 +679,142 @@ test "filesystem tiny native ring mixes file socket timer pressure and drains sh
     try testing.expectEqual(null, loop.control.registrations.first);
     try support.drained(&loop);
 }
+
+test "filesystem direct uring aligned transfers and misalignment errors" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    var loop = try nativeLoop(8);
+    defer loop.deinit();
+    try directRoundtrip(&loop);
+}
+
+test "filesystem direct epoll aligned transfers and misalignment errors" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    var loop = try io.Loop.initWithBackend(.{ .entries = 8 }, .epoll);
+    defer loop.deinit();
+    try directRoundtrip(&loop);
+}
+
+fn directRoundtrip(loop: *io.Loop) !void {
+    const linux = std.os.linux;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pool: WorkerPool = undefined;
+    try pool.init(testing.allocator, loop, 1);
+    defer pool.deinit();
+    var create: co.Frame(fs.Create) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "direct",
+        .flags = .{ .read = true },
+        .direct = true,
+    }) };
+    finish(loop, &create);
+    const file = create.getResult() catch |err| switch (err) {
+        error.InvalidArgument, error.UnsupportedOperation => return error.SkipZigTest,
+        else => return err,
+    };
+    defer file.close(testing.io);
+    const flags = linux.fcntl(file.handle, linux.F.GETFL, 0);
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(flags));
+    try testing.expect((@as(linux.O, @bitCast(@as(u32, @intCast(flags))))).DIRECT);
+    try testing.expectEqual(.RDWR, (@as(linux.O, @bitCast(@as(u32, @intCast(flags))))).ACCMODE);
+
+    var stat: linux.Statx = undefined;
+    const rc = linux.statx(file.handle, "", linux.AT.EMPTY_PATH, .{ .DIOALIGN = true }, &stat);
+    if (linux.errno(rc) == .NOSYS or linux.errno(rc) == .INVAL) return error.SkipZigTest;
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
+    if (!stat.mask.DIOALIGN or stat.dio_mem_align == 0 or stat.dio_offset_align <= 1)
+        return error.SkipZigTest;
+    const alignment: usize = @max(stat.dio_mem_align, stat.dio_offset_align);
+    try testing.expect(std.math.isPowerOfTwo(alignment));
+    const storage = try testing.allocator.alloc(u8, alignment * 3);
+    defer testing.allocator.free(storage);
+    const start = std.mem.alignForward(usize, @intFromPtr(storage.ptr), alignment) - @intFromPtr(storage.ptr);
+    const buffer = storage[start..][0..alignment];
+    @memset(buffer, 0x5a);
+
+    inline for (.{ fs.WriteAt, fs.worker.WriteAt }) |C| {
+        var write: co.Frame(C) = .{ .coroutine = .init(&pool, .{ .file = file, .buffer = buffer }) };
+        finish(loop, &write);
+        try testing.expectEqual(buffer.len, try write.getResult());
+    }
+    inline for (.{ fs.ReadAt, fs.worker.ReadAt }) |C| {
+        @memset(buffer, 0);
+        var read: co.Frame(C) = .{ .coroutine = .init(&pool, .{ .file = file, .buffer = buffer }) };
+        finish(loop, &read);
+        try testing.expectEqual(buffer.len, try read.getResult());
+        for (buffer) |byte| try testing.expectEqual(0x5a, byte);
+    }
+    inline for (.{ fs.ReadAt, fs.WriteAt, fs.worker.ReadAt, fs.worker.WriteAt }) |C| {
+        for (0..3) |case| {
+            var frame: co.Frame(C) = .{ .coroutine = .init(&pool, .{
+                .file = file,
+                .buffer = switch (case) {
+                    0 => buffer[0 .. buffer.len - 1],
+                    1 => storage[start + 1 ..][0..alignment],
+                    else => buffer,
+                },
+                .offset = if (case == 2) 1 else 0,
+            }) };
+            finish(loop, &frame);
+            try testing.expectError(error.InvalidArgument, frame.getResult());
+        }
+    }
+    var open: co.Frame(fs.Open) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "direct",
+        .direct = true,
+    }) };
+    finish(loop, &open);
+    const reopened = try open.getResult();
+    defer reopened.close(testing.io);
+    const reopened_flags: linux.O = @bitCast(@as(u32, @intCast(linux.fcntl(reopened.handle, linux.F.GETFL, 0))));
+    try testing.expect(reopened_flags.DIRECT);
+    create = .{ .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "buffered" }) };
+    finish(loop, &create);
+    const buffered = try create.getResult();
+    defer buffered.close(testing.io);
+    const buffered_flags: linux.O = @bitCast(@as(u32, @intCast(linux.fcntl(buffered.handle, linux.F.GETFL, 0))));
+    try testing.expect(!buffered_flags.DIRECT);
+    try testing.expectEqual(0, pool.outstanding);
+    try support.drained(loop);
+}
+
+test "filesystem failed direct setup closes the opened handle" {
+    const Fake = struct {
+        fn open(_: ?*anyopaque, _: std.Io.Dir, _: []const u8, _: std.Io.Dir.OpenFileOptions) fs.File.OpenError!fs.File {
+            return .{
+                .handle = if (builtin.os.tag == .windows) @ptrFromInt(std.math.maxInt(usize)) else -1,
+                .flags = .{ .nonblocking = false },
+            };
+        }
+        fn create(_: ?*anyopaque, _: std.Io.Dir, _: []const u8, _: std.Io.Dir.CreateFileOptions) fs.File.OpenError!fs.File {
+            return .{
+                .handle = if (builtin.os.tag == .windows) @ptrFromInt(std.math.maxInt(usize)) else -1,
+                .flags = .{ .nonblocking = false },
+            };
+        }
+        fn close(data: ?*anyopaque, files: []const fs.File) void {
+            const count: *usize = @ptrCast(@alignCast(data.?));
+            count.* += files.len;
+        }
+    };
+    var count: usize = 0;
+    var vtable = testing.io.vtable.*;
+    vtable.dirOpenFile = Fake.open;
+    vtable.dirCreateFile = Fake.create;
+    vtable.fileClose = Fake.close;
+    const fake_io: std.Io = .{ .vtable = &vtable, .userdata = &count };
+    var pool: WorkerPool = undefined;
+    var open = fs.Open.init(&pool, .{ .dir = .cwd(), .path = "ignored", .direct = true });
+    var create = fs.Create.init(&pool, .{ .dir = .cwd(), .path = "ignored", .direct = true });
+    try testing.expectError(error.BadFileDescriptor, open.action.run(fake_io));
+    try testing.expectError(error.BadFileDescriptor, create.action.run(fake_io));
+    try testing.expectEqual(2, count);
+}
+
+test "filesystem Linux unsupported direct setup reports unsupported operation" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    var pool: WorkerPool = undefined;
+    var open = fs.Open.init(&pool, .{ .dir = .cwd(), .path = "/dev/null", .direct = true });
+    try testing.expectError(error.UnsupportedOperation, open.action.run(testing.io));
+}

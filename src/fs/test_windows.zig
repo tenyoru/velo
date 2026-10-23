@@ -410,3 +410,85 @@ test "windows filesystem queued and inflight cancellation drain native packets i
         }
     }
 }
+
+test "windows direct filesystem native and isolated worker transfers enforce sector constraints" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var loop = try io.Loop.init(.{ .entries = 8 });
+    defer loop.deinit();
+    var pool: workers.Pool = undefined;
+    try pool.init(testing.allocator, &loop, 1);
+    defer pool.deinit();
+    var frame: co.Frame(fs.Create) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "direct",
+        .flags = .{ .read = true },
+        .direct = true,
+    }) };
+    finish(&loop, &frame);
+    const file = try frame.getResult();
+    defer file.close(testing.io);
+    try testing.expect(file.flags.nonblocking);
+    var storage_info: extern struct {
+        logical: u32,
+        physical_atomic: u32,
+        physical_performance: u32,
+        effective_atomic: u32,
+        flags: u32,
+        sector_offset: u32,
+        partition_offset: u32,
+    } = undefined;
+    try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStorageInfo, &storage_info, @sizeOf(@TypeOf(storage_info))) != 0);
+    const alignment: usize = @max(storage_info.logical, storage_info.physical_atomic, storage_info.effective_atomic);
+    try testing.expect(storage_info.logical > 1 and std.math.isPowerOfTwo(alignment));
+    const storage = try testing.allocator.alloc(u8, alignment * 3);
+    defer testing.allocator.free(storage);
+    const start = std.mem.alignForward(usize, @intFromPtr(storage.ptr), alignment) - @intFromPtr(storage.ptr);
+    const buffer = storage[start..][0..alignment];
+    @memset(buffer, 0x5a);
+    inline for (.{ fs.WriteAt, fs.worker.WriteAt }) |C| {
+        var write: co.Frame(C) = .{ .coroutine = .init(&pool, .{ .file = file, .buffer = buffer }) };
+        finish(&loop, &write);
+        try testing.expectEqual(buffer.len, try write.getResult());
+    }
+    inline for (.{ fs.ReadAt, fs.worker.ReadAt }) |C| {
+        @memset(buffer, 0);
+        var read: co.Frame(C) = .{ .coroutine = .init(&pool, .{ .file = file, .buffer = buffer }) };
+        finish(&loop, &read);
+        try testing.expectEqual(buffer.len, try read.getResult());
+        for (buffer) |byte| try testing.expectEqual(0x5a, byte);
+    }
+    inline for (.{ fs.ReadAt, fs.WriteAt, fs.worker.ReadAt, fs.worker.WriteAt }) |C| {
+        for ([_]bool{ false, true }) |offset| {
+            var invalid: co.Frame(C) = .{ .coroutine = .init(&pool, .{
+                .file = file,
+                .buffer = if (offset) buffer else buffer[0 .. buffer.len - 1],
+                .offset = if (offset) 1 else 0,
+            }) };
+            finish(&loop, &invalid);
+            try testing.expectError(error.InvalidArgument, invalid.getResult());
+        }
+    }
+    var open: co.Frame(fs.Open) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "direct",
+        .direct = true,
+    }) };
+    finish(&loop, &open);
+    const reopened = try open.getResult();
+    defer reopened.close(testing.io);
+    try testing.expect(reopened.flags.nonblocking);
+    open = .{ .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = ".", .direct = true }) };
+    finish(&loop, &open);
+    try testing.expectError(error.UnsupportedOperation, open.getResult());
+    frame = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "locked direct",
+        .flags = .{ .lock = .exclusive },
+        .direct = true,
+    }) };
+    finish(&loop, &frame);
+    try testing.expectError(error.UnsupportedOperation, frame.getResult());
+    try testing.expectError(error.FileNotFound, tmp.dir.openFile(testing.io, "locked direct", .{}));
+    try drained(&loop, &pool);
+}

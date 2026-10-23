@@ -2,19 +2,36 @@ const std = @import("std");
 const io = @import("../event/root.zig");
 const w = @import("../event/backends/win32.zig");
 
-pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool) std.Io.File {
-    if (w.GetFileType(file.handle) != 1) return file;
-    const stat = file.stat(threaded) catch return file;
-    if (stat.kind != .file) return file;
+pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool, direct: bool) !std.Io.File {
+    const file_type = w.GetFileType(file.handle);
+    if (file_type != 1) {
+        if (direct and file_type == 0) {
+            const code = w.GetLastError();
+            if (code != 0) return mapError(.sync, code);
+        }
+        if (direct) return error.UnsupportedOperation;
+        return file;
+    }
+    const stat = file.stat(threaded) catch |err| {
+        if (direct) return err;
+        return file;
+    };
+    if (stat.kind != .file) {
+        if (direct) return error.UnsupportedOperation;
+        return file;
+    }
 
-    // Reopen by identity, not pathname; a failed upgrade leaves the original usable.
+    // Reopen by identity; only the optional asynchronous upgrade may fall back.
     const handle = w.ReOpenFile(
         file.handle,
         (if (read) @as(u32, 0x80000000) else 0) | (if (write) @as(u32, 0x40000000) else 0),
         1 | 2 | 4,
-        w.FILE_FLAG_OVERLAPPED,
+        w.FILE_FLAG_OVERLAPPED | (if (direct) w.FILE_FLAG_NO_BUFFERING else @as(u32, 0)),
     );
-    if (@intFromPtr(handle) == std.math.maxInt(usize)) return file;
+    if (@intFromPtr(handle) == std.math.maxInt(usize)) {
+        if (direct) return mapError(.sync, w.GetLastError());
+        return file;
+    }
     file.close(threaded);
     return .{ .handle = handle, .flags = .{ .nonblocking = true } };
 }
@@ -68,13 +85,14 @@ pub fn mapError(comptime kind: io.Kind, code: u32) anyerror {
             else => error.AccessDenied,
         },
         .INVALID_HANDLE => error.BadFileDescriptor,
+        .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
         .INVALID_PARAMETER => error.InvalidArgument,
         .NOT_ENOUGH_MEMORY, .OUTOFMEMORY, .INVALID_USER_BUFFER, .NOT_ENOUGH_QUOTA => error.SystemResources,
         .DISK_FULL, .HANDLE_DISK_FULL => error.NoSpaceLeft,
         .DISK_QUOTA_EXCEEDED => error.DiskQuota,
         .FILE_TOO_LARGE => error.FileTooBig,
         .WRITE_PROTECT => error.AccessDenied,
-        .LOCK_VIOLATION, .SHARING_VIOLATION => error.FileBusy,
+        .LOCK_VIOLATION, .SHARING_VIOLATION, .DELETE_PENDING => error.FileBusy,
         .SEEK, .SEEK_ON_DEVICE => error.Unseekable,
         .NOT_SUPPORTED, .INVALID_FUNCTION => error.UnsupportedOperation,
         .BROKEN_PIPE, .NO_DATA => error.BrokenPipe,

@@ -297,3 +297,53 @@ test "macOS native cancellation before submission acquires no AIO ownership" {
     try testing.expectEqual(null, loop.control.registrations.first);
     try support.drained(&loop);
 }
+
+test "macOS direct cache hint supports worker and available native transfers" {
+    var loop = try io.Loop.init(.{ .entries = 8 });
+    defer loop.deinit();
+    var pool: workers.Pool = undefined;
+    try pool.init(testing.allocator, &loop, 1);
+    defer pool.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var create: co.Frame(fs.Create) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "nocache",
+        .flags = .{ .read = true },
+        .direct = true,
+    }) };
+    finish(&loop, &create);
+    const file = try create.getResult();
+    defer file.close(testing.io);
+    const FNOCACHE = 0x00040000;
+    const flags = std.c.fcntl(file.handle, std.c.F.GETFL, @as(c_int, 0));
+    try testing.expect(flags >= 0 and flags & FNOCACHE != 0);
+    inline for (.{ fs.WriteAt, fs.worker.WriteAt }) |C| {
+        var write: co.Frame(C) = .{ .coroutine = .init(&pool, .{
+            .file = file,
+            .buffer = "cache hint",
+            .offset = 3,
+        }) };
+        finish(&loop, &write);
+        try testing.expectEqual(10, try write.getResult());
+    }
+    var open: co.Frame(fs.Open) = .{ .coroutine = .init(&pool, .{
+        .dir = tmp.dir,
+        .path = "nocache",
+        .direct = true,
+    }) };
+    finish(&loop, &open);
+    const reopened = try open.getResult();
+    defer reopened.close(testing.io);
+    const reopened_flags = std.c.fcntl(reopened.handle, std.c.F.GETFL, @as(c_int, 0));
+    try testing.expect(reopened_flags >= 0 and reopened_flags & FNOCACHE != 0);
+    inline for (.{ fs.ReadAt, fs.worker.ReadAt }) |C| {
+        var buffer: [10]u8 = undefined;
+        var read: co.Frame(C) = .{ .coroutine = .init(&pool, .{ .file = reopened, .buffer = &buffer, .offset = 3 }) };
+        finish(&loop, &read);
+        try testing.expectEqual(10, try read.getResult());
+        try testing.expectEqualStrings("cache hint", &buffer);
+    }
+    try testing.expectEqual(0, pool.outstanding);
+    try support.drained(&loop);
+}

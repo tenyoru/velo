@@ -10,6 +10,15 @@
 //! supplied synchronous handles use workers. Associated handles stay on one loop.
 //! Use these transfer wrappers on IOCP-associated files, not std.Io.Threaded's APC path.
 //! Submitted Darwin AIO drains to its original completion even after cancellation.
+//! Open/Create `direct` defaults to false: Linux enables O_DIRECT, Windows requests
+//! FILE_FLAG_NO_BUFFERING, and macOS uses the weaker F_NOCACHE cache hint, not O_DIRECT.
+//! Requested direct setup never silently falls back; Windows locks/path-only opens
+//! and nonregular handles are unsupported. Direct does not imply durability.
+//! Callers must discover the file/device's buffer, length and offset constraints:
+//! Linux statx(STATX_DIOALIGN), when supported, or filesystem/device documentation;
+//! Windows volume logical-sector multiples for lengths/offsets and physical-sector
+//! buffer alignment (IOCTL_STORAGE_QUERY_PROPERTY). 4096 is not a universal guarantee.
+//! Linux filesystems may reject misalignment or fall back to buffered I/O themselves.
 
 const std = @import("std");
 const builtin = @import("builtin");
