@@ -43,7 +43,8 @@ pub fn allocate(io: std.Io, file: std.Io.File, start: u64, end: u64) !void {
     const limit = @min(end, stat.size);
     while (offset < limit) {
         var extent: PhysicalExtent = .{
-            .contiguous = @intCast(limit - offset),
+            // XNU rounds the query start down, then subtracts that displacement from the returned run.
+            .contiguous = @intCast(stat.size),
             .device_offset = @intCast(offset),
         };
         const rc = std.c.fcntl(file.handle, std.c.F.LOG2PHYS_EXT, @intFromPtr(&extent));
