@@ -492,3 +492,75 @@ test "windows direct filesystem native and isolated worker transfers enforce sec
     try testing.expectError(error.FileNotFound, tmp.dir.openFile(testing.io, "locked direct", .{}));
     try drained(&loop, &pool);
 }
+
+test "windows Allocate never lowers preexisting allocation or EOF on overlapped handles" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var loop = try io.Loop.init(.{ .entries = 8 });
+    defer loop.deinit();
+    var pool: workers.Pool = undefined;
+    try pool.init(testing.allocator, &loop, 1);
+    defer pool.deinit();
+    const file = try create(&pool, tmp.dir, "allocation");
+    defer file.close(testing.io);
+    const eof = 64 * 1024;
+    var write: co.Frame(fs.WriteAt) = .{ .coroutine = .init(&pool, .{
+        .file = file,
+        .buffer = "tail",
+        .offset = eof - 4,
+    }) };
+    finish(&loop, &write);
+    try testing.expectEqual(4, try write.getResult());
+    const reservation: i64 = 1024 * 1024;
+    try testing.expect(w.SetFileInformationByHandle(file.handle, w.FileAllocationInfo, &reservation, @sizeOf(i64)) != 0);
+    var before: w.FILE_STANDARD_INFO = undefined;
+    try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &before, @sizeOf(w.FILE_STANDARD_INFO)) != 0);
+    for ([_]u64{ 1, eof + 4096, 2 * reservation }) |end| {
+        var allocate: co.Frame(fs.Allocate) = .{ .coroutine = .init(&pool, .{ .file = file, .len = end }) };
+        finish(&loop, &allocate);
+        try allocate.getResult();
+        var after: w.FILE_STANDARD_INFO = undefined;
+        try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &after, @sizeOf(w.FILE_STANDARD_INFO)) != 0);
+        try testing.expect(after.AllocationSize >= before.AllocationSize);
+        try testing.expect(after.AllocationSize >= @as(i64, @intCast(end)));
+        try testing.expectEqual(@max(before.EndOfFile, @as(i64, @intCast(end))), after.EndOfFile);
+        var tail: [4]u8 = undefined;
+        var read: co.Frame(fs.ReadAt) = .{ .coroutine = .init(&pool, .{ .file = file, .buffer = &tail, .offset = eof - 4 }) };
+        finish(&loop, &read);
+        try testing.expectEqual(4, try read.getResult());
+        try testing.expectEqualStrings("tail", &tail);
+        before = after;
+    }
+    var open: co.Frame(fs.Open) = .{ .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "allocation" }) };
+    finish(&loop, &open);
+    const readonly = try open.getResult();
+    defer readonly.close(testing.io);
+    var denied: co.Frame(fs.Allocate) = .{ .coroutine = .init(&pool, .{ .file = readonly, .len = 4 * reservation }) };
+    finish(&loop, &denied);
+    try testing.expectError(error.AccessDenied, denied.getResult());
+    try drained(&loop, &pool);
+}
+
+test "windows Allocate rejects sparse files without changing allocation or EOF" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(testing.io, "sparse", .{ .read = true });
+    defer file.close(testing.io);
+    const FSCTL_SET_SPARSE = 0x900c4;
+    var returned: u32 = undefined;
+    if (w.DeviceIoControl(file.handle, FSCTL_SET_SPARSE, null, 0, null, 0, &returned, null) == 0) {
+        const code = w.GetLastError();
+        if (code == 1 or code == 50) return error.SkipZigTest;
+        return @import("windows.zig").mapError(.sync, code);
+    }
+    try file.setLength(testing.io, 1024 * 1024);
+    var before: w.FILE_STANDARD_INFO = undefined;
+    try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &before, @sizeOf(w.FILE_STANDARD_INFO)) != 0);
+    var pool: workers.Pool = undefined;
+    var allocate = fs.Allocate.init(&pool, .{ .file = file, .len = 2 * 1024 * 1024 });
+    try testing.expectError(error.UnsupportedOperation, allocate.action.run(testing.io));
+    var after: w.FILE_STANDARD_INFO = undefined;
+    try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &after, @sizeOf(w.FILE_STANDARD_INFO)) != 0);
+    try testing.expectEqual(before.AllocationSize, after.AllocationSize);
+    try testing.expectEqual(before.EndOfFile, after.EndOfFile);
+}

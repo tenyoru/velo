@@ -12,7 +12,14 @@ pub const INVALID_PARAMETER = 87;
 pub const HANDLE_EOF = 38;
 pub const FILE_FLAG_OVERLAPPED = 0x40000000;
 pub const FILE_FLAG_NO_BUFFERING = 0x20000000;
+pub const FileStandardInfo = 1;
+pub const FileAllocationInfo = 5;
+pub const FileEndOfFileInfo = 6;
+pub const FileAttributeTagInfo = 9;
 pub const FileStorageInfo = 16;
+
+pub const FILE_STANDARD_INFO = std.os.windows.FILE.STANDARD_INFORMATION;
+pub const FILE_ATTRIBUTE_TAG_INFO = std.os.windows.FILE.ATTRIBUTE_TAG_INFO;
 
 pub const OVERLAPPED = extern struct {
     internal: usize = 0,
@@ -182,6 +189,10 @@ pub extern "kernel32" fn ReOpenFile(HANDLE, u32, u32, u32) callconv(.winapi) HAN
 pub extern "kernel32" fn GetFileType(HANDLE) callconv(.winapi) u32;
 
 pub extern "kernel32" fn GetFileInformationByHandleEx(HANDLE, u32, *anyopaque, u32) callconv(.winapi) i32;
+
+pub extern "kernel32" fn SetFileInformationByHandle(HANDLE, u32, *const anyopaque, u32) callconv(.winapi) i32;
+
+pub extern "kernel32" fn DeviceIoControl(HANDLE, u32, ?*const anyopaque, u32, ?*anyopaque, u32, ?*u32, ?*OVERLAPPED) callconv(.winapi) i32;
 
 pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, u32, ?*u32, *OVERLAPPED) callconv(.winapi) i32;
 

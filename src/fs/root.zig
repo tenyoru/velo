@@ -19,6 +19,14 @@
 //! Windows volume logical-sector multiples for lengths/offsets and physical-sector
 //! buffer alignment (IOCTL_STORAGE_QUERY_PROPERTY). 4096 is not a universal guarantee.
 //! Linux filesystems may reject misalignment or fall back to buffered I/O themselves.
+//! Allocate reserves backing storage for [offset, offset+len) and grows EOF to at
+//! least offset+len without shrinking or overwriting data. It always uses workers;
+//! offset+len must fit i64; len=0 does no I/O after validation. No zero-write emulation.
+//! Exclude concurrent resize, hole punching or allocation
+//! changes on the file. Failures may leave increased allocation or EOF behind.
+//! Windows sparse/compressed files are unsupported. macOS requires existing data
+//! through EOF to have queryable physical extents: holes or unavailable mappings
+//! are unsupported because F_PREALLOCATE only extends from physical EOF.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -30,6 +38,7 @@ pub const File = worker.File;
 pub const Open = worker.Open;
 pub const Create = worker.Create;
 pub const Close = worker.Close;
+pub const Allocate = worker.Allocate;
 pub const ReadAt = Dispatch("ReadAt", "read", usize);
 pub const WriteAt = Dispatch("WriteAt", "write", usize);
 pub const Sync = Dispatch("Sync", "sync", void);

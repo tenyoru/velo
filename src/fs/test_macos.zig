@@ -347,3 +347,44 @@ test "macOS direct cache hint supports worker and available native transfers" {
     try testing.expectEqual(0, pool.outstanding);
     try support.drained(&loop);
 }
+
+test "macOS Allocate rejects existing holes instead of reserving unrelated physical tail" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(testing.io, "holes", .{ .read = true });
+    defer file.close(testing.io);
+    const size = 1024 * 1024;
+    var buffer: [size]u8 = @splat(0x5a);
+    try testing.expectEqual(size, try file.writePositional(testing.io, &.{&buffer}, 0));
+    try file.sync(testing.io);
+    var hole: extern struct {
+        flags: u32 = 0,
+        reserved: u32 = 0,
+        offset: i64 = size / 4,
+        length: i64 = size / 2,
+    } = .{};
+    switch (std.c.errno(std.c.fcntl(file.handle, std.c.F.PUNCHHOLE, @intFromPtr(&hole)))) {
+        .SUCCESS => {},
+        .OPNOTSUPP, .INVAL, .NOSYS => return error.SkipZigTest,
+        else => return error.Unexpected,
+    }
+    var loop = try io.Loop.init(.{ .entries = 8 });
+    defer loop.deinit();
+    var pool: workers.Pool = undefined;
+    try pool.init(testing.allocator, &loop, 1);
+    defer pool.deinit();
+    var allocate: co.Frame(fs.Allocate) = .{ .coroutine = .init(&pool, .{ .file = file, .len = size * 2 }) };
+    finish(&loop, &allocate);
+    try testing.expectError(error.UnsupportedOperation, allocate.getResult());
+    try testing.expectEqual(size, (try file.stat(testing.io)).size);
+    var tail: [1]u8 = undefined;
+    try testing.expectEqual(1, try file.readPositional(testing.io, &.{&tail}, size - 1));
+    try testing.expectEqual(0x5a, tail[0]);
+    const readonly = try tmp.dir.openFile(testing.io, "holes", .{});
+    defer readonly.close(testing.io);
+    allocate = .{ .coroutine = .init(&pool, .{ .file = readonly, .len = size * 2 }) };
+    finish(&loop, &allocate);
+    try testing.expectError(error.UnsupportedOperation, allocate.getResult());
+    try testing.expectEqual(0, pool.outstanding);
+    try support.drained(&loop);
+}

@@ -9,7 +9,7 @@ machines: nothing switches stacks.
   with optional CPU pinning and thread names; fixed-size `workers.Pool` for blocking work
 - **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
   (macOS), or overlapped IOCP (Windows), with worker fallback; sync uses io_uring
-  or workers, and open/create/close use workers; opt-in direct I/O
+  or workers, and open/create/close/preallocation use workers; opt-in direct I/O
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
 ## Architecture

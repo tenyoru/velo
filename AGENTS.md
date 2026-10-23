@@ -83,8 +83,8 @@ stackful fibers), so coroutines here are explicit state machines.
   `worker` exposes explicitly worker-backed operations
 - `src/fs/native.zig`: native file wrappers over shared `event.Operation`, filesystem errno mapping
 - `src/fs/worker.zig`: worker-backed file implementation using `workers.Pool.Work`,
-  exposed through `velo.fs.worker`; Open/Create `direct` and positional Linux errno
-  handling
+  exposed through `velo.fs.worker`; Open/Create `direct`, positional Linux errno
+  handling, and grow-only `Allocate` (native platform reservation, no zero-fill emulation)
 - `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
   worker transfers use private event-tagged OVERLAPPEDs, never Threaded APCs
 - `src/fs/test.zig`: forced uring/epoll/fallback, errno, cancellation, pressure, drain tests
@@ -183,9 +183,10 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
 - **io_uring:** [Lord of the io_uring](https://unixism.net/loti/);
   [io_uring_setup(2)](https://man7.org/linux/man-pages/man2/io_uring_setup.2.html)
   feature flags, NODROP completion retention, overflow handling
-- **Direct I/O:** [Linux O_DIRECT](https://man7.org/linux/man-pages/man2/creat.2.html)
+- **Direct I/O and allocation:** [Linux O_DIRECT](https://man7.org/linux/man-pages/man2/creat.2.html)
   and [F_SETFL](https://man7.org/linux/man-pages/man2/F_GETFL.2const.html):
   per-filesystem alignment and flag setup;
+  [fallocate](https://man7.org/linux/man-pages/man2/fallocate.2.html): reserve/grow semantics;
   [Windows buffering](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering):
   logical-sector lengths/offsets and physical-sector buffer alignment.
 - **Darwin AIO** (checked 2026-10-21):

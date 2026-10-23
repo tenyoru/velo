@@ -75,6 +75,29 @@ pub fn sync(file: std.Io.File) anyerror!void {
     if (w.FlushFileBuffers(file.handle) == 0) return mapError(.sync, w.GetLastError());
 }
 
+pub fn allocate(file: std.Io.File, end: u64) !void {
+    var info: w.FILE_STANDARD_INFO = undefined;
+    if (w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &info, @sizeOf(w.FILE_STANDARD_INFO)) == 0)
+        return mapError(.sync, w.GetLastError());
+    if (info.Directory.toBool()) return error.UnsupportedOperation;
+    if (info.AllocationSize < 0 or info.EndOfFile < 0) return error.InvalidArgument;
+    var attributes: w.FILE_ATTRIBUTE_TAG_INFO = undefined;
+    if (w.GetFileInformationByHandleEx(file.handle, w.FileAttributeTagInfo, &attributes, @sizeOf(w.FILE_ATTRIBUTE_TAG_INFO)) == 0)
+        return mapError(.sync, w.GetLastError());
+    const flags: std.os.windows.FILE.ATTRIBUTE = @bitCast(attributes.FileAttributes);
+    if (flags.SPARSE_FILE or flags.COMPRESSED) return error.UnsupportedOperation;
+
+    const eof = @max(info.EndOfFile, @as(i64, @intCast(end)));
+    const allocation = @max(info.AllocationSize, eof);
+    // Win32's synchronous wrapper waits even on overlapped handles; stack IOSBs must not escape.
+    if (allocation > info.AllocationSize and
+        w.SetFileInformationByHandle(file.handle, w.FileAllocationInfo, &allocation, @sizeOf(i64)) == 0)
+        return mapError(.sync, w.GetLastError());
+    if (eof > info.EndOfFile and
+        w.SetFileInformationByHandle(file.handle, w.FileEndOfFileInfo, &eof, @sizeOf(i64)) == 0)
+        return mapError(.sync, w.GetLastError());
+}
+
 pub fn mapError(comptime kind: io.Kind, code: u32) anyerror {
     const err: std.os.windows.Win32Error = @fromBackingInt(code);
     return switch (err) {
