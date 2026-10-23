@@ -451,7 +451,7 @@ test "filesystem tiny native ring mixes file socket timer pressure and drains sh
     try support.drained(&loop);
 }
 
-test "filesystem direct uring aligned transfers and misalignment errors" {
+test "filesystem direct uring aligned transfers and alignment handling" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
     var loop = try nativeLoop(8);
@@ -460,7 +460,7 @@ test "filesystem direct uring aligned transfers and misalignment errors" {
     try directRoundtrip(&loop);
 }
 
-test "filesystem direct epoll aligned transfers and misalignment errors" {
+test "filesystem direct epoll aligned transfers and alignment handling" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
     var loop = try io.Loop.initWithBackend(.{ .entries = 8 }, .epoll);
@@ -536,23 +536,55 @@ fn directRoundtrip(loop: *io.Loop) !void {
         for (buffer) |byte| try testing.expectEqual(0x5a, byte);
     }
 
-    inline for (.{ fs.ReadAt, fs.WriteAt, fs.worker.ReadAt, fs.worker.WriteAt }) |C| {
+    // O_DIRECT may reject misalignment or fall back to buffered I/O.
+    inline for (.{ fs.ReadAt, fs.worker.ReadAt, fs.WriteAt, fs.worker.WriteAt }) |C| {
+        const is_read = C == fs.ReadAt or C == fs.worker.ReadAt;
+        if (!is_read) try file.setLength(testing.io, alignment + 1);
+
         for (0..3) |case| {
+            const misaligned = switch (case) {
+                0 => buffer[0 .. buffer.len - 1],
+                1 => storage[start + 1 ..][0..alignment],
+                else => buffer,
+            };
+            const offset: usize = if (case == 2) 1 else 0;
+            @memset(misaligned, 0);
+            const raw = while (true) {
+                const result = if (is_read)
+                    linux.pread(file.handle, misaligned.ptr, misaligned.len, @intCast(offset))
+                else
+                    linux.pwrite(file.handle, misaligned.ptr, misaligned.len, @intCast(offset));
+                if (linux.errno(result) == .INTR) continue;
+                break result;
+            };
+            @memset(misaligned, if (is_read) 0 else 0xa5);
             var frame: co.Frame(C) = .{
                 .coroutine = .init(&pool, .{
                     .file = file,
-                    .buffer = switch (case) {
-                        0 => buffer[0 .. buffer.len - 1],
-                        1 => storage[start + 1 ..][0..alignment],
-                        else => buffer,
-                    },
-                    .offset = if (case == 2) 1 else 0,
+                    .buffer = misaligned,
+                    .offset = offset,
                 }),
             };
 
             finish(loop, &frame);
 
-            try testing.expectError(error.InvalidArgument, frame.getResult());
+            switch (linux.errno(raw)) {
+                .INVAL => try testing.expectError(error.InvalidArgument, frame.getResult()),
+                .SUCCESS => {
+                    try testing.expectEqual(raw, try frame.getResult());
+                    if (is_read) {
+                        try testing.expectEqual(@min(misaligned.len, alignment - offset), raw);
+                        for (misaligned[0..raw]) |byte| try testing.expectEqual(0x5a, byte);
+                    } else {
+                        try testing.expectEqual(misaligned.len, raw);
+                        const written = storage[start..][0 .. alignment * 2];
+                        @memset(written, 0);
+                        try testing.expectEqual(alignment + 1, try file.readPositional(testing.io, &.{written}, 0));
+                        for (written[offset..][0..raw]) |byte| try testing.expectEqual(0xa5, byte);
+                    }
+                },
+                else => |err| try testing.expectEqual(linux.E.SUCCESS, err),
+            }
         }
     }
 
