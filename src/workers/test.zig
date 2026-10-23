@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
 const WorkerPool = @import("Pool.zig");
+const Group = @import("Group.zig");
 const support = @import("../event/tests/support.zig");
 const testing = std.testing;
 
@@ -301,4 +303,200 @@ test "worker shutdown cancels queued jobs drains running results rejects new wor
             frame.coroutine.deinit();
         }
     }
+}
+
+test "group runs one loop per thread and posts between loops" {
+    const Context = struct {
+        group: *Group,
+        peers: []Peer,
+
+        const Self = @This();
+        const Peer = struct {
+            entry_thread: ?std.Thread.Id = null,
+            callback_thread: ?std.Thread.Id = null,
+            calls: usize = 0,
+            done: std.Io.Event = .unset,
+            post: io.Control.Post = .{ .callback = callback },
+            frame: co.Frame(Sender) = undefined,
+
+            fn callback(post: *io.Control.Post) void {
+                const self: *@This() = @fieldParentPtr("post", post);
+                self.callback_thread = std.Thread.getCurrentId();
+                self.done.set(testing.io);
+            }
+        };
+        const Sender = struct {
+            context: *Self,
+            index: usize,
+
+            pub fn poll(self: *@This(), _: *co.Task) co.Poll(void) {
+                const context = self.context;
+                const destination = (self.index + 1) % context.peers.len;
+                const next = context.group.loop(destination);
+                next.retain();
+                next.control.postRelease(&context.peers[destination].post);
+
+                return .{ .ready = {} };
+            }
+        };
+
+        fn entry(self: *Self, loop: *io.Loop, index: usize) void {
+            const peer = &self.peers[index];
+            peer.entry_thread = std.Thread.getCurrentId();
+            peer.calls += 1;
+            peer.frame = .{ .coroutine = .{ .context = self, .index = index } };
+            loop.executor.spawn(&peer.frame.task);
+        }
+    };
+
+    for (support.modes) |mode| {
+        for ([_]?usize{ 1, 2, 4, null }) |count| {
+            const n = count orelse try std.Thread.getCpuCount();
+            const peers = try testing.allocator.alloc(Context.Peer, n);
+            defer testing.allocator.free(peers);
+            for (peers) |*peer| peer.* = .{};
+
+            var group: Group = undefined;
+            var context: Context = .{ .group = &group, .peers = peers };
+            try group.init(testing.allocator, .{
+                .count = count,
+                .loop = .{ .entries = 8 },
+                .backend = if (builtin.os.tag == .linux) switch (mode) {
+                    .auto => .auto,
+                    .epoll => .epoll,
+                } else .auto,
+            }, &context, Context.entry);
+
+            for (peers) |*peer| peer.done.waitUncancelable(testing.io);
+            group.deinit();
+
+            for (peers, 0..) |peer, i| {
+                try testing.expectEqual(1, peer.calls);
+                try testing.expect(peer.entry_thread.? != std.Thread.getCurrentId());
+                try testing.expectEqual(peer.entry_thread, peer.callback_thread);
+                for (peers[0..i]) |previous| try testing.expect(previous.entry_thread != peer.entry_thread);
+                try testing.expect(peer.frame.result != null);
+            }
+        }
+    }
+}
+
+test "group startup failure cancels started loops" {
+    const Context = struct {
+        events: [3]co.Event = @splat(.{}),
+        frames: [3]co.Frame(co.Event.Wait) = undefined,
+
+        fn entry(self: *@This(), loop: *io.Loop, index: usize) error{Injected}!void {
+            self.frames[index] = .{ .coroutine = self.events[index].wait() };
+            loop.executor.spawn(&self.frames[index].task);
+            if (index == 1) return error.Injected;
+        }
+
+        fn never(calls: *std.atomic.Value(usize), _: *io.Loop, _: usize) void {
+            _ = calls.fetchAdd(1, .monotonic);
+        }
+    };
+
+    for (support.modes) |mode| {
+        var group: Group = undefined;
+        var context: Context = .{};
+        try testing.expectError(error.Injected, group.init(testing.allocator, .{
+            .count = 3,
+            .backend = if (builtin.os.tag == .linux) switch (mode) {
+                .auto => .auto,
+                .epoll => .epoll,
+            } else .auto,
+        }, &context, Context.entry));
+
+        for (&context.frames, &context.events) |*frame, *event| {
+            try testing.expectError(error.Canceled, frame.getResult());
+            event.deinit();
+        }
+    }
+
+    if (builtin.os.tag == .linux) {
+        var group: Group = undefined;
+        var calls: std.atomic.Value(usize) = .init(0);
+        try testing.expectError(error.EntriesNotPowerOfTwo, group.init(testing.allocator, .{
+            .count = 3,
+            .loop = .{ .entries = 3 },
+        }, &calls, Context.never));
+        try testing.expectEqual(0, calls.load(.acquire));
+    }
+}
+
+test "group pins each thread to one allowed CPU" {
+    const Noop = struct {
+        fn entry(_: void, _: *io.Loop, _: usize) void {}
+    };
+
+    var group: Group = undefined;
+    switch (builtin.os.tag) {
+        .linux => {
+            const linux = std.os.linux;
+            const allowed = try std.posix.sched_getaffinity(0);
+            const count = @min(2, linux.CPU_COUNT(allowed));
+            const Context = struct {
+                observed: [2]linux.cpu_set_t = undefined,
+
+                fn entry(self: *@This(), _: *io.Loop, index: usize) !void {
+                    self.observed[index] = try std.posix.sched_getaffinity(0);
+                }
+            };
+            var context: Context = .{};
+            try group.init(testing.allocator, .{ .count = count, .pin = true }, &context, Context.entry);
+            group.deinit();
+
+            var cpu: usize = 0;
+            for (context.observed[0..count]) |observed| {
+                while (allowed[cpu / @bitSizeOf(usize)] & (@as(usize, 1) << @intCast(cpu % @bitSizeOf(usize))) == 0) cpu += 1;
+                var expected: linux.cpu_set_t = @splat(0);
+                expected[cpu / @bitSizeOf(usize)] = @as(usize, 1) << @intCast(cpu % @bitSizeOf(usize));
+
+                try testing.expectEqual(1, linux.CPU_COUNT(observed));
+                try testing.expectEqualDeep(expected, observed);
+                cpu += 1;
+            }
+            if (count == 2) try testing.expect(!std.mem.eql(usize, &context.observed[0], &context.observed[1]));
+
+            try testing.expectError(error.NotEnoughCpus, group.init(testing.allocator, .{
+                .count = @as(usize, linux.CPU_COUNT(allowed)) + 1,
+                .pin = true,
+            }, {}, Noop.entry));
+        },
+        .windows => {
+            try group.init(testing.allocator, .{ .count = 1, .pin = true }, {}, Noop.entry);
+            group.deinit();
+        },
+        else => try testing.expectError(error.Unsupported, group.init(testing.allocator, .{ .pin = true }, {}, Noop.entry)),
+    }
+}
+
+test "group names threads and rejects invalid options" {
+    const Context = struct {
+        names: [2][std.Thread.max_name_len + 1]u8 = undefined,
+
+        fn entry(self: *@This(), _: *io.Loop, index: usize) !void {
+            _ = try std.posix.prctl(.GET_NAME, .{@intFromPtr(&self.names[index])});
+        }
+
+        fn noop(_: void, _: *io.Loop, _: usize) void {}
+    };
+
+    var group: Group = undefined;
+    if (builtin.os.tag == .linux) {
+        var context: Context = .{};
+        try group.init(testing.allocator, .{ .count = 2 }, &context, Context.entry);
+        group.deinit();
+
+        try testing.expectEqualStrings("velo-0", std.mem.sliceTo(&context.names[0], 0));
+        try testing.expectEqualStrings("velo-1", std.mem.sliceTo(&context.names[1], 0));
+    }
+
+    try testing.expectError(error.InvalidThreadCount, group.init(testing.allocator, .{ .count = 0 }, {}, Context.noop));
+    const long_name: [std.Thread.max_name_len]u8 = @splat('x');
+    try testing.expectError(error.NameTooLong, group.init(testing.allocator, .{
+        .count = 1,
+        .name = &long_name,
+    }, {}, Context.noop));
 }

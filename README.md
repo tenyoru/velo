@@ -5,7 +5,8 @@ machines: nothing switches stacks.
 
 - **Coroutines:** executor, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
-- **Threads:** cross-thread posts into a loop; fixed-size `workers.Pool` for blocking work
+- **Threads:** cross-thread posts into a loop; `workers.Group` runs one loop per thread
+  with optional CPU pinning and thread names; fixed-size `workers.Pool` for blocking work
 - **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
   (macOS), or overlapped IOCP (Windows), with worker fallback; sync uses io_uring
   or workers, and open/create/close use workers
@@ -34,7 +35,8 @@ flowchart LR
 - `Control` runs posted callbacks on the loop thread. `workers.Pool` executes blocking
   actions on worker threads and posts completions back to that loop.
 - The executor also works without I/O. Independent loops can run on separate threads,
-  each owning its tasks and communicating through posts.
+  each owning its tasks and communicating through posts; `workers.Group` creates, runs,
+  and drains such loops, each on its own thread.
 
 Public modules: `velo.coroutines`, `velo.event`, `velo.workers`, and `velo.fs`.
 `velo.fs.worker` exposes explicitly worker-backed file operations.

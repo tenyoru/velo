@@ -193,6 +193,10 @@ pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) i32;
 
 pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 
+pub extern "kernel32" fn GetProcessAffinityMask(HANDLE, *usize, *usize) callconv(.winapi) i32;
+
+pub extern "kernel32" fn SetThreadAffinityMask(HANDLE, usize) callconv(.winapi) usize;
+
 pub extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) i32;
 
 pub extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) i32;

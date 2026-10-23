@@ -65,15 +65,18 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/backends/DarwinAio.zig`: Darwin AIO ABI bindings, zero-length completion
   probe, submission and rejection diagnostics; kevent delivery owns reaping
 - `src/event/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing
-  WinAPI bindings
+  WinAPI bindings (also used by `workers.Group` affinity)
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
 
-- `src/workers/root.zig`: `velo.workers`; exports the generic `Pool`
+- `src/workers/root.zig`: `velo.workers`; exports `Pool` and `Group`
 - `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
   completions and cancellation remain connected to the owning event loop
-- `src/workers/test.zig`: worker pool tests
+- `src/workers/Group.zig`: one loop per thread; pin/name/create in-thread, `entry`
+  seeding, all-or-nothing start with cancel-and-drain rollback, close barrier
+  before loop deinit
+- `src/workers/test.zig`: worker pool and group tests
 
 - `src/fs/root.zig`: `velo.fs`; operations select from
   `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers;
