@@ -10,6 +10,7 @@ machines: nothing switches stacks.
 - **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
   (macOS), or overlapped IOCP (Windows), with worker fallback; sync uses io_uring
   or workers, and open/create/close/preallocation use workers; opt-in direct I/O
+  and io_uring registered buffers
 - **Backends:** io_uring with epoll fallback (Linux), kqueue (macOS), IOCP (Windows)
 
 ## Architecture

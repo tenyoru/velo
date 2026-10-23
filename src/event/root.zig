@@ -35,6 +35,11 @@ pub const Loop = backend.Loop;
 pub const LoopOptions = struct {
     /// io_uring SQ/macOS AIO admission capacity, not a task limit; Linux requires a power of two >= 2.
     entries: u16 = 32,
+    /// Up to 64 borrowed regions, registered once by io_uring; other backends ignore this.
+    /// Pin the descriptor array and backing memory until the loop is drained and deinitialized;
+    /// leave the descriptors unchanged throughout that lifetime.
+    /// Contained file transfers use fixed buffers; registration failures fail initialization.
+    buffers: []const []u8 = &.{},
 };
 
 pub const Control = @import("Control.zig");

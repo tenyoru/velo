@@ -13,6 +13,13 @@ fn uring(entries: u16) !io.Loop {
     };
 }
 
+fn registeredLoop(buffers: []const []u8) !io.Loop {
+    // Skip only setup denial; explicit registration errors must fail the test.
+    var available = try uring(8);
+    available.deinit();
+    return io.Loop.initWithBackend(.{ .entries = 8, .buffers = buffers }, .uring);
+}
+
 fn drained(loop: *io.Loop) !void {
     try testing.expectEqual(0, loop.active);
     try testing.expectEqual(0, loop.outstanding_cqes);
@@ -630,4 +637,179 @@ test "io cancellation retains operation through all three CQE orders" {
         _ = loop.executor.runOne();
         op.deinit();
     };
+}
+
+test "io fixed buffers select SQE opcode and index using the clamped contained range" {
+    // Preparation never dereferences these ranges, including the oversized and wrapping ones.
+    const Case = struct {
+        address: usize,
+        len: usize,
+        region_len: usize = 16,
+        index: ?u16 = null,
+    };
+    const limit = std.math.maxInt(i32);
+    const cases = [_]Case{
+        .{ .address = 0x10000, .len = 16, .index = 0 },
+        .{ .address = 0x10003, .len = 5, .index = 0 },
+        .{ .address = 0x20000, .len = 16, .index = 1 },
+        .{ .address = 0x2000f, .len = 1, .index = 1 },
+        .{ .address = 0xffff, .len = 2 },
+        .{ .address = 0x1000f, .len = 2 },
+        .{ .address = 0x10010, .len = 1 },
+        .{ .address = 0x1ffff, .len = 2 },
+        .{ .address = 0x2000f, .len = 2 },
+        .{ .address = 0xffff, .len = 0x10012 },
+        .{ .address = 0x10008, .len = 0x10000 },
+        .{ .address = 0x30000, .len = 4 },
+        .{ .address = std.math.maxInt(usize) - 7, .len = 16 },
+        .{ .address = 0x10000, .len = limit + 17, .region_len = limit, .index = 0 },
+        .{ .address = 0x10000, .len = limit + 17, .region_len = limit - 1 },
+        .{ .address = 0x10001, .len = limit + 17, .region_len = limit },
+    };
+
+    inline for (.{ io.Kind.read_at, .write_at }) |kind| {
+        for (cases) |case| {
+            const first: [*]u8 = @ptrFromInt(0x10000);
+            const second: [*]u8 = @ptrFromInt(0x20000);
+            const regions = [_][]u8{ first[0..case.region_len], second[0..16] };
+            var loop: io.Loop = .{ .buffers = &regions };
+            const pointer: [*]u8 = @ptrFromInt(case.address);
+            var op = io.Operation.Coroutine(kind).init(&loop, .{
+                .file = .stdout(),
+                .buffer = pointer[0..case.len],
+                .offset = 17,
+            });
+            var sqe: linux.io_uring_sqe = undefined;
+            op.operation.prepare(&sqe, null);
+
+            const expected: linux.IORING_OP = if (case.index != null)
+                (if (kind == .read_at) linux.IORING_OP.READ_FIXED else .WRITE_FIXED)
+            else
+                (if (kind == .read_at) linux.IORING_OP.READ else .WRITE);
+            try testing.expectEqual(expected, sqe.opcode);
+            try testing.expectEqual(case.index orelse 0, sqe.buf_index);
+            try testing.expectEqual(case.address, sqe.addr);
+            try testing.expectEqual(@min(case.len, limit), sqe.len);
+            try testing.expectEqual(std.Io.File.stdout().handle, sqe.fd);
+            try testing.expectEqual(17, sqe.off);
+            try testing.expectEqual(0, sqe.flags);
+            try testing.expectEqual(0, sqe.rw_flags);
+            try testing.expectEqual(@intFromPtr(&op.operation), sqe.user_data);
+        }
+    }
+}
+
+test "io fixed buffers register once and mix kernel file transfers with ordinary memory" {
+    var memory: [2][64]u8 = undefined;
+    const regions = [_][]u8{ &memory[0], &memory[1] };
+    var loop = try registeredLoop(&regions);
+    defer loop.deinit();
+    if (!loop.file_ops.read or !loop.file_ops.write) return error.SkipZigTest;
+    try testing.expectEqual(regions[0..].ptr, loop.buffers.ptr);
+    try testing.expectEqual(regions[0].ptr, loop.buffers[0].ptr);
+    try testing.expectEqual(regions[1].ptr, loop.buffers[1].ptr);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(testing.io, "fixed", .{ .read = true });
+    defer file.close(testing.io);
+    @memcpy(memory[0][5..9], "ping");
+    var ordinary: [4]u8 = undefined;
+
+    for ([_][]const u8{ memory[0][5..9], "pong" }, [_][]u8{ memory[1][7..11], &ordinary }) |input, output| {
+        var write: co.Frame(io.Operation.Coroutine(.write_at)) = .{
+            .coroutine = .init(&loop, .{ .file = file, .buffer = input, .offset = 3 }),
+        };
+        loop.executor.spawn(&write.task);
+        run(&loop);
+        try testing.expectEqual(4, try write.getResult());
+        write.coroutine.deinit();
+        try drained(&loop);
+
+        var read: co.Frame(io.Operation.Coroutine(.read_at)) = .{
+            .coroutine = .init(&loop, .{ .file = file, .buffer = output, .offset = 3 }),
+        };
+        loop.executor.spawn(&read.task);
+        run(&loop);
+        try testing.expectEqual(4, try read.getResult());
+        try testing.expectEqualStrings(input, output);
+        read.coroutine.deinit();
+        try drained(&loop);
+    }
+
+    var short: co.Frame(io.Operation.Coroutine(.read_at)) = .{
+        .coroutine = .init(&loop, .{ .file = file, .buffer = memory[1][0..16], .offset = 5 }),
+    };
+    loop.executor.spawn(&short.task);
+    run(&loop);
+    try testing.expectEqual(2, try short.getResult());
+    try testing.expectEqualStrings("ng", memory[1][0..2]);
+    short.coroutine.deinit();
+    try drained(&loop);
+}
+
+test "io fixed buffers retain registered memory through kernel cancellation and drain" {
+    var memory: [64]u8 = undefined;
+    const regions = [_][]u8{&memory};
+    var loop = try registeredLoop(&regions);
+    defer loop.deinit();
+    if (!loop.file_ops.read) return error.SkipZigTest;
+    const fds = try pair();
+    defer for (fds) |fd| {
+        _ = linux.close(fd);
+    };
+
+    var read: co.Frame(io.Operation.Coroutine(.read_at)) = .{
+        .coroutine = .init(&loop, .{
+            .file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
+            .buffer = memory[3..7],
+        }),
+    };
+    loop.executor.spawn(&read.task);
+    loop.executor.run();
+    const op = &read.coroutine.operation;
+    loop.pending.remove(&op.node);
+    const sqe = try loop.ring.get_sqe();
+    op.prepare(sqe, null);
+    try testing.expectEqual(linux.IORING_OP.READ_FIXED, sqe.opcode);
+    loop.outstanding_cqes += 1;
+    try testing.expectEqual(1, try loop.ring.submit());
+
+    read.coroutine.cancel();
+    run(&loop);
+    try testing.expectError(error.OperationCanceled, read.getResult());
+    try testing.expectEqual(.done, op.native.uring.cancel);
+    try testing.expectEqual(0, read.task.outstanding_io);
+    read.coroutine.deinit();
+    try drained(&loop);
+}
+
+test "io fixed buffers reject excess and invalid registration without automatic fallback" {
+    var available = try uring(2);
+    available.deinit();
+    var byte: [1]u8 = undefined;
+    const regions: [65][]u8 = @splat(&byte);
+    const inaccessible: [*]u8 = @ptrFromInt(1);
+    const invalid = [_][]u8{inaccessible[0..1]};
+    for ([_]io.Loop.Backend{ .uring, .auto }) |mode| {
+        try testing.expectError(error.TooManyBuffers, io.Loop.initWithBackend(.{ .buffers = &regions }, mode));
+        try testing.expectError(error.InvalidArgument, io.Loop.initWithBackend(.{ .buffers = &invalid }, mode));
+    }
+
+    var maximum = try registeredLoop(regions[0..64]);
+    defer maximum.deinit();
+    try testing.expectEqual(64, maximum.buffers.len);
+    run(&maximum);
+    try drained(&maximum);
+}
+
+test "io epoll ignores fixed buffer descriptors and registration limits" {
+    const inaccessible: [*]u8 = @ptrFromInt(1);
+    const regions: [65][]u8 = @splat(inaccessible[0..1]);
+    var loop = try io.Loop.initWithBackend(.{ .buffers = &regions }, .epoll);
+    defer loop.deinit();
+    try testing.expect(loop.epoll != null);
+    try testing.expectEqual(0, loop.buffers.len);
+    run(&loop);
+    try support.drained(&loop);
 }

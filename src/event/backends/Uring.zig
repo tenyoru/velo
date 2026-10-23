@@ -152,6 +152,20 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
         .sync => |v| sqe.prep_fsync(v.file.handle, 0),
     }
 
+    // Match the submitted, clamped range rather than the caller's full slice.
+    if (sqe.opcode == .READ or sqe.opcode == .WRITE) {
+        for (op.loop.buffers, 0..) |buffer, index| {
+            const base = @intFromPtr(buffer.ptr);
+            if (sqe.addr < base) continue;
+            const offset = sqe.addr - base;
+            if (offset > buffer.len or sqe.len > buffer.len - offset) continue;
+
+            sqe.opcode = if (sqe.opcode == .READ) .READ_FIXED else .WRITE_FIXED;
+            sqe.buf_index = @intCast(index);
+            break;
+        }
+    }
+
     const id: u64 = @intFromPtr(op);
     assert(id & 3 == 0);
     sqe.user_data = id;

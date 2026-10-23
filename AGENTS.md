@@ -189,6 +189,9 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [fallocate](https://man7.org/linux/man-pages/man2/fallocate.2.html): reserve/grow semantics;
   [Windows buffering](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering):
   logical-sector lengths/offsets and physical-sector buffer alignment.
+- **Registered buffers:** [io_uring_register](https://man7.org/linux/man-pages/man2/io_uring_register.2.html):
+  memlock accounting, containment and teardown. `Loop.Options.buffers` borrows at
+  most 64 regions until deinit; `Uring.prepare` selects fixed opcodes transparently.
 - **Darwin AIO** (checked 2026-10-21):
   [Apple XNU kern_aio.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_aio.c),
   `SIGEV_KEVENT`, `filt_aioprocess`: completion errno/result in kevent64 `ext`,

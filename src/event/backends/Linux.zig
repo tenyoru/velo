@@ -12,6 +12,7 @@ pub const Options = @import("../root.zig").LoopOptions;
 ring: linux.IoUring = undefined,
 epoll: ?Epoll.State = null,
 file_ops: struct { read: bool = false, write: bool = false, sync: bool = false } = .{},
+buffers: []const []u8 = &.{},
 executor: Executor = .{},
 pending: std.DoublyLinkedList = .{},
 cancellations: std.DoublyLinkedList = .{},
@@ -37,14 +38,36 @@ pub fn initWithBackend(options: Options, selected: Backend) !Loop {
     if (!std.math.isPowerOfTwo(entries)) return error.EntriesNotPowerOfTwo;
 
     var loop: Loop = switch (selected) {
-        .uring => try initUring(entries),
+        .uring => try initUring(options),
         .epoll => .{ .epoll = try Epoll.init() },
-        .auto => initUring(entries) catch |err| switch (err) {
+        .auto => initUring(options) catch |err| switch (err) {
             error.PermissionDenied, error.SystemOutdated => .{ .epoll = try Epoll.init() },
             else => return err,
         },
     };
     errdefer if (loop.epoll) |*state| Epoll.deinit(state) else loop.ring.deinit();
+
+    // Registration errors must not enter the setup-only automatic fallback above.
+    if (loop.epoll == null and options.buffers.len != 0) {
+        var vectors: [64]std.posix.iovec = undefined;
+        if (options.buffers.len > vectors.len) return error.TooManyBuffers;
+        for (options.buffers, 0..) |buffer, i| {
+            vectors[i] = .{ .base = buffer.ptr, .len = buffer.len };
+        }
+        const e = linux.errno(linux.io_uring_register(
+            loop.ring.fd,
+            .REGISTER_BUFFERS,
+            vectors[0..options.buffers.len].ptr,
+            @intCast(options.buffers.len),
+        ));
+        switch (e) {
+            .SUCCESS => {},
+            .FAULT => return error.InvalidArgument,
+            .PERM, .ACCES => return error.PermissionDenied,
+            else => return Uring.mapError(e),
+        }
+        loop.buffers = options.buffers;
+    }
 
     const fd = linux.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC);
     const e = linux.errno(fd);
@@ -124,8 +147,8 @@ const required_ops = [_]linux.IORING_OP{
     .RECV,
 };
 
-fn initUring(entries: u16) !Loop {
-    var ring = try linux.IoUring.init(entries, 0);
+fn initUring(options: Options) !Loop {
+    var ring = try linux.IoUring.init(options.entries, 0);
     errdefer ring.deinit();
 
     // Live requests can exceed CQ capacity; limiting them can strand their dependencies.
@@ -137,6 +160,9 @@ fn initUring(entries: u16) !Loop {
         else => return err,
     };
     if (!supportsAll(probe)) return error.SystemOutdated;
+    if (options.buffers.len != 0 and
+        (!probe.is_supported(.READ_FIXED) or !probe.is_supported(.WRITE_FIXED)))
+        return error.FixedBuffersUnsupported;
 
     return .{
         .ring = ring,
