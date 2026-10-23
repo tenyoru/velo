@@ -24,14 +24,15 @@
 //! Allocate reserves backing storage for [offset, offset+len) and grows EOF to at
 //! least offset+len without shrinking or overwriting data. It always uses workers;
 //! offset+len must fit i64; len=0 does no I/O after validation. No zero-write emulation.
-//! Exclude concurrent resize, hole punching or allocation
-//! changes on the file. Failures may leave increased allocation or EOF behind.
+//! Exclude concurrent resize, hole punching or allocation changes on the file.
+//! Failures may leave increased allocation or EOF behind.
 //! Windows sparse/compressed files are unsupported. macOS requires existing data
 //! through EOF to have queryable physical extents: holes or unavailable mappings
 //! are unsupported because F_PREALLOCATE only extends from physical EOF.
 
 const std = @import("std");
 const builtin = @import("builtin");
+
 const co = @import("../coroutines/root.zig");
 const Pool = @import("../workers/root.zig").Pool;
 
@@ -60,6 +61,7 @@ fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime
             if (@field(pool.loop.file_ops, capability) and
                 (if (builtin.os.tag == .windows) options.file.flags.nonblocking else true))
                 return .{ .native = Native.init(pool, options) };
+
             return .{ .worker = Worker.init(pool, options) };
         }
 
@@ -88,7 +90,8 @@ fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime
 
 test {
     std.testing.refAllDecls(@This());
-    _ = @import("test.zig");
-    if (builtin.os.tag == .windows) _ = @import("test_windows.zig");
-    if (builtin.os.tag == .macos) _ = @import("test_macos.zig");
+    _ = @import("tests/portable.zig");
+    if (builtin.os.tag == .linux) _ = @import("tests/linux.zig");
+    if (builtin.os.tag == .windows) _ = @import("tests/windows.zig");
+    if (builtin.os.tag == .macos) _ = @import("tests/macos.zig");
 }

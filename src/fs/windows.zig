@@ -1,8 +1,15 @@
 const std = @import("std");
+
 const io = @import("../event/root.zig");
 const w = @import("../event/backends/win32.zig");
 
-pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool, direct: bool) !std.Io.File {
+pub fn upgrade(
+    threaded: std.Io,
+    file: std.Io.File,
+    read: bool,
+    write: bool,
+    direct: bool,
+) !std.Io.File {
     const file_type = w.GetFileType(file.handle);
     if (file_type != 1) {
         if (direct and file_type == 0) {
@@ -12,6 +19,7 @@ pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool, dir
         if (direct) return error.UnsupportedOperation;
         return file;
     }
+
     const stat = file.stat(threaded) catch |err| {
         if (direct) return err;
         return file;
@@ -32,8 +40,13 @@ pub fn upgrade(threaded: std.Io, file: std.Io.File, read: bool, write: bool, dir
         if (direct) return mapError(.sync, w.GetLastError());
         return file;
     }
+
     file.close(threaded);
-    return .{ .handle = handle, .flags = .{ .nonblocking = true } };
+
+    return .{
+        .handle = handle,
+        .flags = .{ .nonblocking = true },
+    };
 }
 
 pub fn transfer(
@@ -43,8 +56,10 @@ pub fn transfer(
     offset: u64,
 ) anyerror!usize {
     if (buffer.len == 0) return 0;
+
     const event = w.CreateEventW(null, 1, 0, null) orelse return mapError(kind, w.GetLastError());
     defer _ = w.CloseHandle(event);
+
     var overlapped: w.OVERLAPPED = .{
         .offset = @truncate(offset),
         .offset_high = @truncate(offset >> 32),
@@ -52,6 +67,7 @@ pub fn transfer(
         .event = @ptrFromInt(@intFromPtr(event) | 1),
     };
     const len: u32 = @intCast(@min(buffer.len, std.math.maxInt(u32)));
+
     const success = if (kind == .read_at)
         w.ReadFile(file.handle, buffer.ptr, len, null, &overlapped)
     else
@@ -61,12 +77,14 @@ pub fn transfer(
         if (kind == .read_at and code == w.HANDLE_EOF) return 0;
         if (code != w.IO_PENDING) return mapError(kind, code);
     }
+
     var bytes: u32 = undefined;
     if (w.GetOverlappedResult(file.handle, &overlapped, &bytes, 1) == 0) {
         const code = w.GetLastError();
         if (kind == .read_at and code == w.HANDLE_EOF) return 0;
         return mapError(kind, code);
     }
+
     return bytes;
 }
 
@@ -77,24 +95,49 @@ pub fn sync(file: std.Io.File) anyerror!void {
 
 pub fn allocate(file: std.Io.File, end: u64) !void {
     var info: w.FILE_STANDARD_INFO = undefined;
-    if (w.GetFileInformationByHandleEx(file.handle, w.FileStandardInfo, &info, @sizeOf(w.FILE_STANDARD_INFO)) == 0)
+    if (w.GetFileInformationByHandleEx(
+        file.handle,
+        w.FileStandardInfo,
+        &info,
+        @sizeOf(w.FILE_STANDARD_INFO),
+    ) == 0)
         return mapError(.sync, w.GetLastError());
+
     if (info.Directory.toBool()) return error.UnsupportedOperation;
     if (info.AllocationSize < 0 or info.EndOfFile < 0) return error.InvalidArgument;
+
     var attributes: w.FILE_ATTRIBUTE_TAG_INFO = undefined;
-    if (w.GetFileInformationByHandleEx(file.handle, w.FileAttributeTagInfo, &attributes, @sizeOf(w.FILE_ATTRIBUTE_TAG_INFO)) == 0)
+    if (w.GetFileInformationByHandleEx(
+        file.handle,
+        w.FileAttributeTagInfo,
+        &attributes,
+        @sizeOf(w.FILE_ATTRIBUTE_TAG_INFO),
+    ) == 0)
         return mapError(.sync, w.GetLastError());
+
     const flags: std.os.windows.FILE.ATTRIBUTE = @bitCast(attributes.FileAttributes);
     if (flags.SPARSE_FILE or flags.COMPRESSED) return error.UnsupportedOperation;
 
     const eof = @max(info.EndOfFile, @as(i64, @intCast(end)));
     const allocation = @max(info.AllocationSize, eof);
+
     // Win32's synchronous wrapper waits even on overlapped handles; stack IOSBs must not escape.
     if (allocation > info.AllocationSize and
-        w.SetFileInformationByHandle(file.handle, w.FileAllocationInfo, &allocation, @sizeOf(i64)) == 0)
+        w.SetFileInformationByHandle(
+            file.handle,
+            w.FileAllocationInfo,
+            &allocation,
+            @sizeOf(i64),
+        ) == 0)
         return mapError(.sync, w.GetLastError());
+
     if (eof > info.EndOfFile and
-        w.SetFileInformationByHandle(file.handle, w.FileEndOfFileInfo, &eof, @sizeOf(i64)) == 0)
+        w.SetFileInformationByHandle(
+            file.handle,
+            w.FileEndOfFileInfo,
+            &eof,
+            @sizeOf(i64),
+        ) == 0)
         return mapError(.sync, w.GetLastError());
 }
 

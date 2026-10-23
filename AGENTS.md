@@ -85,10 +85,13 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/fs/worker.zig`: worker-backed file implementation using `workers.Pool.Work`,
   exposed through `velo.fs.worker`; Open/Create `direct`, positional Linux errno
   handling, and grow-only `Allocate` (native platform reservation, no zero-fill emulation)
+- `src/fs/linux.zig`, `macos.zig`: platform syscall helpers for direct I/O,
+  positional transfers, data-only sync, and allocation; Darwin ABI definitions
 - `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
   worker transfers use private event-tagged OVERLAPPEDs, never Threaded APCs
-- `src/fs/test.zig`: forced uring/epoll/fallback, errno, cancellation, pressure, drain tests
-- `src/fs/test_windows.zig`, `test_macos.zig`: native platform file tests;
+- `src/fs/tests/portable.zig`, `linux.zig`: portable contracts and Linux backend tests;
+  `support.zig` shares frame completion and the positional roundtrip
+- `src/fs/tests/windows.zig`, `macos.zig`: native platform file tests;
   macOS native cases explicitly skip when the AIO-to-kqueue probe fails
 
 - `src/event/tests/support.zig`: shared socket setup, short-transfer echo, deadlines,

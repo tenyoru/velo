@@ -1,8 +1,10 @@
 const builtin = @import("builtin");
+
 const co = @import("../coroutines/root.zig");
 const io = @import("../event/root.zig");
 const Pool = @import("../workers/root.zig").Pool;
 const worker = @import("worker.zig");
+const windows = @import("windows.zig");
 
 pub const ReadAt = Coroutine(.read_at, worker.ReadAt, usize);
 pub const WriteAt = Coroutine(.write_at, worker.WriteAt, usize);
@@ -15,10 +17,22 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
         const Self = @This();
 
         pub fn init(pool: *Pool, options: @FieldType(Worker, "action")) Self {
-            return .{ .inner = .init(pool.loop, if (kind == .sync)
-                .{ .file = options.file, .data_only = options.data_only }
-            else
-                .{ .file = options.file, .buffer = options.buffer, .offset = options.offset }) };
+            if (kind == .sync) {
+                return .{
+                    .inner = .init(pool.loop, .{
+                        .file = options.file,
+                        .data_only = options.data_only,
+                    }),
+                };
+            }
+
+            return .{
+                .inner = .init(pool.loop, .{
+                    .file = options.file,
+                    .buffer = options.buffer,
+                    .offset = options.offset,
+                }),
+            };
         }
 
         pub fn poll(self: *Self, task: *co.Task) co.Poll(anyerror!T) {
@@ -27,6 +41,7 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
                 .ready => |result| {
                     // The shared lifecycle narrows socket errors; file errno must be mapped raw.
                     if (self.inner.primaryError()) |e| return .{ .ready = mapError(kind, e) };
+
                     return .{ .ready = result };
                 },
             }
@@ -43,7 +58,8 @@ fn Coroutine(comptime kind: io.Kind, comptime Worker: type, comptime T: type) ty
 }
 
 pub fn mapError(comptime kind: io.Kind, e: io.NativeError) anyerror {
-    if (builtin.os.tag == .windows) return @import("windows.zig").mapError(kind, e);
+    if (builtin.os.tag == .windows) return windows.mapError(kind, e);
+
     return switch (e) {
         .CANCELED => error.OperationCanceled,
         .BADF => switch (kind) {
