@@ -284,3 +284,63 @@ test "lifecycle race keeps timer success drains canceled receive and permits soc
         try support.drained(&loop);
     }
 }
+
+test "lifecycle WithTimeout expires, keeps early success, skips timers for ready children" {
+    const long: io.Timespec = .{ .sec = 5, .nsec = 0 };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(4, mode);
+        defer loop.deinit();
+
+        const fds = try support.pair(&loop, .ipv4);
+        defer for (fds) |fd| support.close(fd);
+
+        var buffer: [1]u8 = undefined;
+        const Bounded = io.WithTimeout(io.Recv);
+
+        var idle: co.Frame(Bounded) = .init(.init(&loop, io.Recv.init(&loop, .{
+            .fd = fds[0],
+            .buffer = &buffer,
+        }), .{ .duration = .{ .sec = 0, .nsec = 5_000_000 } }));
+
+        try testing.expectError(error.Timeout, loop.block(&idle));
+        try testing.expect(idle.coroutine.expired);
+        try support.drained(&loop);
+
+        var send: co.Frame(io.Send) = .init(io.Send.init(&loop, .{ .fd = fds[1], .buffer = "x" }));
+        try testing.expectEqual(1, try loop.block(&send));
+
+        // The canceled five-second timer must drain without waiting for expiry.
+        const before = try io.now();
+        var received: co.Frame(Bounded) = .init(.init(&loop, io.Recv.init(&loop, .{
+            .fd = fds[0],
+            .buffer = &buffer,
+        }), .{ .duration = long }));
+
+        try testing.expectEqual(1, try loop.block(&received));
+        try testing.expect((try io.now()).sec - before.sec < 2);
+        try testing.expect(!received.coroutine.expired);
+        try support.drained(&loop);
+
+        var canceled: co.Frame(Bounded) = .init(.init(&loop, io.Recv.init(&loop, .{
+            .fd = fds[0],
+            .buffer = &buffer,
+        }), .{ .duration = long }));
+
+        canceled.cancel();
+        try testing.expectError(error.OperationCanceled, loop.block(&canceled));
+        try support.drained(&loop);
+
+        var event: co.Event = .{};
+        defer event.deinit();
+        event.set();
+
+        var immediate: co.Frame(io.WithTimeout(co.Event.Wait)) = .init(.init(&loop, event.wait(), .{
+            .duration = long,
+        }));
+
+        try loop.block(&immediate);
+        try testing.expect(!immediate.coroutine.timer_started);
+        try support.drained(&loop);
+    }
+}

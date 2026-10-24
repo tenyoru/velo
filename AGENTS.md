@@ -74,6 +74,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+- `src/event/timeout.zig`: `WithTimeout(C)`: lazy timer start, success beats expiry,
+  error after expiry maps to `Timeout`
+
 - `src/workers/root.zig`: `velo.workers`; exports `Pool`, `Group`, and `numa`
 - `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
   completions and cancellation remain connected to the owning event loop

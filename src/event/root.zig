@@ -54,6 +54,7 @@ pub const LoopOptions = struct {
 pub const Control = @import("Control.zig");
 pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
+pub const WithTimeout = @import("timeout.zig").WithTimeout;
 
 pub const Socket = if (builtin.os.tag == .windows) usize else std.c.fd_t;
 pub const SockAddr = switch (builtin.os.tag) {
