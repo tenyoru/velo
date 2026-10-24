@@ -237,6 +237,11 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   `SIGEV_KEVENT`, `filt_aioprocess`: completion errno/result in kevent64 `ext`,
   delivery reaps the request. Probe runtime support; do not infer it from headers.
   Submitted requests drain normally rather than relying on canceled-kevent delivery.
+- **Darwin TCP** (checked 2026-10-24):
+  [XNU tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/netinet/tcp_input.c):
+  a bound, non-listening socket is `TCPS_CLOSED`; incoming packets are dropped without
+  a reset. `tests/net.zig` keeps the port bound to avoid reassignment races and expects
+  a Dial timeout on macOS versus connection refusal on Linux/Windows.
 - **Windows file I/O** (checked 2026-10-21):
   [ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile),
   [ReOpenFile](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile),

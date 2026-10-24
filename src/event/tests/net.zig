@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io = @import("../root.zig");
 const co = @import("../../coroutines/root.zig");
 const support = @import("support.zig");
@@ -71,7 +72,7 @@ test "net listener dial and stream exchange data, half-close and drain" {
     }
 }
 
-test "net dial closes its socket on refusal and opens none when canceled first" {
+test "net failed dial closes its socket and pre-canceled dial opens none" {
     for (support.modes) |mode| {
         var loop = try support.initLoop(4, mode);
         defer loop.deinit();
@@ -85,13 +86,16 @@ test "net dial closes its socket on refusal and opens none when canceled first" 
         try io.localAddress(fd, native.ptr(), &length);
         const address = native.address();
 
-        var refused: co.Frame(io.Dial) = .init(.init(&loop, address, .{
-            .deadline = try io.deadlineIn(io.seconds(5)),
+        // XNU drops packets for a bound TCPS_CLOSED socket without sending a reset.
+        // Linux and Windows refuse; Darwin exercises the same cleanup via a deadline.
+        const darwin = builtin.os.tag == .macos;
+        var failed: co.Frame(io.Dial) = .init(.init(&loop, address, .{
+            .deadline = try io.deadlineIn(if (darwin) io.milliseconds(100) else io.seconds(5)),
         }));
 
-        try testing.expectError(error.ConnectionRefused, loop.block(&refused));
-        try testing.expect(refused.coroutine.fd != null);
-        try testing.expectError(error.BadFileDescriptor, io.localAddress(refused.coroutine.fd.?, native.ptr(), &length));
+        try testing.expectError(if (darwin) error.Timeout else error.ConnectionRefused, loop.block(&failed));
+        try testing.expect(failed.coroutine.fd != null);
+        try testing.expectError(error.BadFileDescriptor, io.localAddress(failed.coroutine.fd.?, native.ptr(), &length));
 
         var canceled: co.Frame(io.Dial) = .init(.init(&loop, address, .{}));
 
