@@ -230,3 +230,43 @@ test "server queues clients behind full slots, counts handler errors and closes 
 test "server cancellation cancels live connections and drains" {
     try serve(CancelLive, 2, 1, .{ .accepted = 1 });
 }
+
+test "server rejects empty slots and cancellation before polling opens no sessions" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(4, mode);
+        defer loop.deinit();
+        var sessions: usize = 0;
+        const address: io.Address = try .parseLiteral("127.0.0.1:0");
+        try testing.expectError(error.InvalidArgument, App.init(&loop, address, &sessions, &.{}, .{}));
+
+        var slots: [1]App.Slot = undefined;
+        var server: co.Frame(App) = .init(try .init(&loop, address, &sessions, &slots, .{}));
+        defer server.coroutine.deinit();
+        server.cancel();
+        try loop.block(&server);
+        try testing.expectEqual(0, sessions);
+        try testing.expectEqual(0, server.coroutine.connections.active);
+        try support.drained(&loop);
+    }
+}
+
+test "server backoff errors propagate after draining rather than reporting success" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(4, mode);
+        defer loop.deinit();
+        var sessions: usize = 0;
+        var slots: [1]App.Slot = undefined;
+        var server: co.Frame(App) = .init(try .init(&loop, try .parseLiteral("127.0.0.1:0"), &sessions, &slots, .{}));
+        defer server.coroutine.deinit();
+
+        // Inject a timer failure into the acceptor's result handler.
+        const acceptor = &server.coroutine.acceptor;
+        acceptor.ctx.server = &server.coroutine;
+        acceptor.state = acceptor.ctx.backoff(error.SystemResources).go;
+        acceptor.started = true;
+        try testing.expectError(error.SystemResources, loop.block(&server));
+        try testing.expectEqual(0, sessions);
+        try testing.expectEqual(0, server.coroutine.connections.active);
+        try support.drained(&loop);
+    }
+}

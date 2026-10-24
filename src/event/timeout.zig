@@ -60,6 +60,9 @@ pub fn WithTimeout(comptime C: type) type {
                     if (self.child_result == null) {
                         self.expired = if (timer) |_| true else |_| false;
                         self.child.cancel();
+                        // Like Frame/Race, cancellation must schedule another poll even
+                        // when the child's cancel callback only sets a flag.
+                        task.wake();
                     }
                 }
             }

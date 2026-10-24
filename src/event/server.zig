@@ -6,7 +6,7 @@
 //! handlers must not close it. Handler errors end only that connection and are counted.
 //! A slot is reserved before each accept, so a full server stops accepting instead of
 //! holding sockets. Transient accept failures (e.g. descriptor exhaustion) back off from
-//! 5 ms to 1 s; invalid-listener errors stop the server and are returned after draining.
+//! 5 ms to 1 s; invalid-listener and backoff-timer errors are returned after draining.
 //! Cancellation, including loop shutdown, stops accepting, cancels connections and drains.
 //! Pin the server and slots from spawn until ready is consumed; `deinit` afterwards.
 
@@ -15,13 +15,19 @@ const io = @import("root.zig");
 const co = @import("../coroutines/root.zig");
 
 pub fn Server(comptime connect: anytype) type {
-    const info = @typeInfo(@TypeOf(connect)).@"fn";
-    if (info.param_types.len != 2 or info.param_types[1] != io.Stream)
-        @compileError("Server needs `fn (Context, io.Stream) Handler`, found " ++ @typeName(@TypeOf(connect)));
+    const signature = "Server needs `fn (Context, io.Stream) Handler`, found " ++ @typeName(@TypeOf(connect));
+    const info = switch (@typeInfo(@TypeOf(connect))) {
+        .@"fn" => |info| info,
+        else => @compileError(signature),
+    };
+    if (info.param_types.len != 2 or info.param_types[0] == null or
+        info.param_types[1] != io.Stream or info.return_type == null)
+        @compileError(signature);
 
     const Context = info.param_types[0].?;
     const Handler = info.return_type.?;
     const R = co.ResultOf(Handler);
+    if (!@hasDecl(Handler, "cancel")) @compileError("Server handlers need `cancel`: " ++ @typeName(Handler));
     switch (@typeInfo(R)) {
         .void => {},
         .error_union => |eu| if (eu.payload != void)
@@ -44,7 +50,7 @@ pub fn Server(comptime connect: anytype) type {
         pub const Slot = Connections.Slot;
         pub const Result = io.Error!void;
 
-        pub const Options = struct { backlog: u31 = 128 };
+        pub const Options = io.Listener.Options;
 
         pub const Stats = struct {
             accepted: usize = 0,
@@ -145,7 +151,10 @@ pub fn Server(comptime connect: anytype) type {
             }
 
             pub fn backoff(self: *Acceptor, result: io.Error!void) Next {
-                result catch return self.stop();
+                result catch |err| {
+                    if (err != error.OperationCanceled) self.fatal = err;
+                    return self.stop();
+                };
                 return self.start();
             }
 
@@ -162,7 +171,9 @@ pub fn Server(comptime connect: anytype) type {
         };
 
         /// Binds and listens; `listener.address` reports the bound port.
+        /// At least one slot is required; empty storage returns InvalidArgument.
         pub fn init(loop: *io.Loop, address: io.Address, context: Context, slots: []Slot, options: Options) io.Error!Self {
+            if (slots.len == 0) return error.InvalidArgument;
             return .{
                 .loop = loop,
                 .listener = try .init(loop, address, .{ .backlog = options.backlog }),

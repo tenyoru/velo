@@ -285,6 +285,45 @@ test "lifecycle race keeps timer success drains canceled receive and permits soc
     }
 }
 
+test "lifecycle WithTimeout repolls flag-only cancellation and preserves late success" {
+    const Child = struct {
+        canceled: bool = false,
+        succeed: bool,
+
+        pub fn poll(self: *@This(), _: *co.Task) co.Poll(error{Canceled}!usize) {
+            if (!self.canceled) return .pending;
+            return .{ .ready = if (self.succeed) 42 else error.Canceled };
+        }
+
+        pub fn cancel(self: *@This()) void {
+            self.canceled = true;
+        }
+    };
+
+    for (support.modes) |mode| {
+        for ([_]bool{ false, true }) |succeed| {
+            var loop = try support.initLoop(4, mode);
+            defer loop.deinit();
+            var bounded: co.Frame(io.WithTimeout(Child)) = .init(.init(&loop, .{ .succeed = succeed }, .{
+                .duration = io.milliseconds(1),
+            }));
+            loop.spawn(&bounded);
+            support.run(&loop);
+            const completed = bounded.result != null;
+            // Clean up even if the regression leaves the child parked.
+            bounded.cancel();
+            support.run(&loop);
+            try testing.expect(completed);
+            if (succeed) {
+                try testing.expectEqual(42, try bounded.getResult());
+            } else {
+                try testing.expectError(error.Timeout, bounded.getResult());
+            }
+            try support.drained(&loop);
+        }
+    }
+}
+
 test "lifecycle WithTimeout expires, keeps early success, skips timers for ready children" {
     const long: io.Timespec = .{ .sec = 5, .nsec = 0 };
 

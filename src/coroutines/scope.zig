@@ -231,8 +231,9 @@ pub fn Scope(comptime C: type) type {
             }
         };
 
-        /// Completes once no slot is busy: the first child error, `Canceled` after
-        /// cancellation, or success.
+        /// Completes when polled with no busy slots: the first child error, `Canceled`
+        /// after cancellation, or success. A wakeup does not close admission; work
+        /// started before the next poll is included in the drain.
         pub const Wait = struct {
             scope: *Self,
             node: Node = .{},
@@ -255,6 +256,12 @@ pub fn Scope(comptime C: type) type {
                     }
                 }
 
+                // Another task may have started work since vacate woke us. Unlike a
+                // reservation, this wakeup grants no resource: wait for the new work too.
+                if (self.state == .granted and self.scope.active != 0) {
+                    self.scope.waits.append(&self.node);
+                    self.state = .waiting;
+                }
                 if (self.state == .waiting) return .pending;
                 if (self.task != null) task.outstanding_io -= 1;
                 self.state = .done;
@@ -400,6 +407,37 @@ test "scope reservations are FIFO, win cancellation, and start canceled children
     ex.run();
 
     try std.testing.expectError(error.Canceled, waiter.getResult());
+}
+
+test "scope wait includes work admitted after its wakeup" {
+    var ex: co.Executor = .{};
+    var slots: [1]Scope(Child).Slot = undefined;
+    var scope: Scope(Child) = .init(&ex, &slots);
+    defer scope.deinit();
+    var polls: usize = 0;
+
+    var reservation: co.Frame(Scope(Child).Reserve) = .init(scope.reserve());
+    ex.spawn(&reservation.task);
+    ex.run();
+    var waiter: co.Frame(Scope(Child).Wait) = .init(scope.wait());
+    ex.spawn(&waiter.task);
+    ex.run();
+
+    scope.release(try reservation.getResult());
+    // Reuse the free slot before the scheduled waiter gets another poll.
+    var event: co.Event = .{};
+    defer event.deinit();
+    try scope.spawn(.{ .wait = event.wait(), .polls = &polls });
+    ex.run();
+    const returned_early = waiter.result != null;
+    const borrowed = waiter.task.outstanding_io;
+
+    event.set();
+    ex.run();
+    try std.testing.expect(!returned_early);
+    try std.testing.expectEqual(1, borrowed);
+    try waiter.getResult();
+    try std.testing.expectEqual(0, waiter.task.outstanding_io);
 }
 
 test "scope released reservation and canceled wait keep draining" {

@@ -42,11 +42,12 @@ test "net listener dial and stream exchange data, half-close and drain" {
                 .dial = .init(&loop, listener.address, .{ .deadline = until }),
             }));
             const connected = loop.block(&connect);
+            // Both results own resources independently, even if the other child failed.
+            defer if (connected.accept) |fd| support.close(fd) else |_| {};
+            defer if (connected.dial) |stream| stream.close() else |_| {};
 
             var server: io.Stream = .init(&loop, try connected.accept);
-            defer server.close();
             var client = try connected.dial;
-            defer client.close();
 
             server.deadline = until;
             client.deadline = until;
@@ -75,10 +76,14 @@ test "net dial closes its socket on refusal and opens none when canceled first" 
         var loop = try support.initLoop(4, mode);
         defer loop.deinit();
 
-        // A just-closed listener's port refuses connections.
-        var listener: io.Listener = try .init(&loop, try .parseLiteral("127.0.0.1:0"), .{});
-        const address = listener.address;
-        listener.deinit();
+        // Keep the port bound but not listening, so another process cannot claim it.
+        const fd = try io.tcpSocket(.ipv4);
+        defer support.close(fd);
+        var native: io.NativeAddress = .init(try .parseLiteral("127.0.0.1:0"));
+        var length = native.len();
+        try io.bind(fd, native.ptr(), length);
+        try io.localAddress(fd, native.ptr(), &length);
+        const address = native.address();
 
         var refused: co.Frame(io.Dial) = .init(.init(&loop, address, .{
             .deadline = try io.deadlineIn(io.seconds(5)),
@@ -86,6 +91,7 @@ test "net dial closes its socket on refusal and opens none when canceled first" 
 
         try testing.expectError(error.ConnectionRefused, loop.block(&refused));
         try testing.expect(refused.coroutine.fd != null);
+        try testing.expectError(error.BadFileDescriptor, io.localAddress(refused.coroutine.fd.?, native.ptr(), &length));
 
         var canceled: co.Frame(io.Dial) = .init(.init(&loop, address, .{}));
 

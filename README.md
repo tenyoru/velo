@@ -132,7 +132,8 @@ TCP helpers remove sockaddr handling:
 - `io.milliseconds`, `io.seconds` and `io.deadlineIn` build durations and deadlines.
 - `io.Server(connect)` reserves a slot before each accept, builds the handler with
   `connect(context, stream)`, closes the stream when the handler finishes, counts handler
-  errors without stopping, and drains on cancellation or shutdown. See `examples/echo.zig`.
+  errors without stopping, and drains on cancellation or shutdown. Supply at least one
+  caller-owned slot; handlers must not close the server-owned stream. See `examples/echo.zig`.
 
 Concurrency composes the same way:
 
@@ -146,6 +147,27 @@ Concurrency composes the same way:
 - `io.WithTimeout(C)` bounds a child by a timer. A success always wins, even after
   expiry; an error after expiry becomes `error.Timeout`.
 
+## Writing a coroutine
+
+Use `Machine` for sequential operations or implement `pub fn poll(*Self, *co.Task)
+co.Poll(T)` directly:
+
+1. Keep suspended state and child coroutines in fields, not temporary locals. Construct
+   children that borrow those fields on the first poll, after the frame is pinned.
+2. Poll a child until ready. On pending, preserve its storage and ensure a wake source
+   will schedule the task; `child.poll(task).value() orelse return .pending` forwards it.
+3. Consume each ready result exactly once. Only then replace the child or reuse its buffer.
+   Clean up successful results even if cancellation was requested or a race was lost.
+4. Implement idempotent `cancel()` that also works before the first poll. Forward it to
+   unfinished children, then keep polling them to ready before finishing yourself.
+   A cancel callback need not wake: `Frame`, `Machine` and the combinators do that.
+5. Custom wake sources must count their borrow in `task.outstanding_io`, retain it through
+   completion until the result is consumed, and unregister before the task finishes.
+6. Keep polling bounded. Use `co.Yield` between batches of synchronous work so other tasks
+   and I/O can make progress. `Machine` does not insert yields between ready children.
+
+See `examples/echo.zig` for `Machine` and `examples/counters.zig` for a hand-written coroutine.
+
 ## Rules
 
 - Pin the loop, frames, buffers, and addresses until the result is consumed,
@@ -155,8 +177,10 @@ Concurrency composes the same way:
 - A loop belongs to one thread. Other threads may call only `post`, `retain`,
   `release`, `stop`, and `shutdown`.
 - Debug and ReleaseSafe builds name tasks after their coroutine type. Undrained
-  `loop.deinit()`, a stalled `block`, stale wakes and tasks finishing with unconsumed
-  children panic with the live tasks listed; `loop.executor.dumpTasks()` prints them on demand.
+  `loop.deinit()` and a stopped or stalled `block` list live tasks before panicking;
+  stale wakes and tasks finishing with unconsumed waits identify the offending task.
+  `loop.executor.dumpTasks()` prints live tasks on demand, on the owning loop thread.
+  `block` requires all work to drain, even if its own frame has already finished.
 - The full contracts are doc comments; start with `src/coroutines/root.zig`
   and `src/event/root.zig`.
 

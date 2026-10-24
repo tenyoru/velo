@@ -120,9 +120,9 @@ test "echo server answers a client and drains on loop shutdown" {
         }
 
         pub fn dial(self: *@This(), result: io.Error!io.Stream) Next {
-            var stream = result catch |err| return self.done(err);
-            stream.deadline = io.deadlineIn(io.seconds(5)) catch |err| return self.done(err);
-            self.stream = stream;
+            self.stream = result catch |err| return self.done(err);
+            self.stream.?.deadline = io.deadlineIn(io.seconds(5)) catch |err| return self.done(err);
+            const stream = self.stream.?;
 
             return .{ .go = .{ .ping = .init(.{
                 .send = stream.sendAll("hello"),

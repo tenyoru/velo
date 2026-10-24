@@ -72,33 +72,37 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
 
         /// Spawns `frame`, runs until the loop drains (including other work), and returns
         /// its result. Panics on run errors, since unwinding would free borrowed storage,
-        /// and if run returns first (stop, or a task parked without a waker).
+        /// and if run returns with any live work (stop, or a task parked without a waker).
         /// Use `spawn` and `run` to stop/resume or retry run errors.
         pub fn block(loop: *Loop, frame: anytype) std.meta.Child(@TypeOf(frame)).Result {
             spawn(loop, frame);
             run(loop) catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-            if (frame.result == null) {
+            if (frame.result == null or !drained(loop)) {
                 if (std.debug.runtime_safety) {
-                    std.debug.print("velo: loop stopped or stalled before the blocked frame completed; live tasks:\n", .{});
+                    std.debug.print("velo: loop stopped or stalled before all work drained; live tasks:\n", .{});
                     loop.executor.dumpTasks();
                 }
-                @panic("loop returned before the blocked frame completed");
+                @panic("velo: block returned with live work; use spawn/run for stop and resume");
             }
             return frame.getResult();
         }
 
+        fn drained(loop: *const Loop) bool {
+            return loop.executor.all_tasks.first == null and loop.executor.ready.first == null and
+                loop.active == 0 and loop.pending.first == null and
+                loop.control.registrations.first == null and !loop.control.hasWork();
+        }
+
         // Reports what is still live before the drain assertions fire.
         fn checkDrained(loop: *Loop) void {
-            const executor = &loop.executor;
-            if (executor.all_tasks.first == null and executor.ready.first == null and loop.active == 0 and
-                loop.pending.first == null and !loop.control.hasWork()) return;
+            if (drained(loop)) return;
 
             std.debug.print(
                 "velo: loop deinit before draining (active operations: {d}, external work: {}); live tasks:\n",
                 .{ loop.active, loop.control.hasWork() },
             );
-            executor.dumpTasks();
+            loop.executor.dumpTasks();
             @panic("velo: loop deinit with live work; cancel or shut down, then run until drained");
         }
 
