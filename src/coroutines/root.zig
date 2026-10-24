@@ -21,6 +21,7 @@ pub const Semaphore = @import("Semaphore.zig");
 pub const Channel = @import("Channel.zig").Channel;
 pub const Machine = @import("machine.zig").Machine;
 pub const Next = @import("machine.zig").Next;
+pub const Scope = @import("scope.zig").Scope;
 
 pub fn Poll(comptime T: type) type {
     return union(enum) {
@@ -299,4 +300,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("test.zig");
     _ = @import("machine.zig");
+    _ = @import("scope.zig");
 }

@@ -47,6 +47,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/coroutines/machine.zig`: `Machine(Ctx)`/`Next`: one active child per state,
   handlers named after states, `start` after pinning, cancellation forwarded to later
   children, comptime handler-signature diagnostics
+- `src/coroutines/scope.zig`: `Scope(C)`: children as separate tasks in caller slots,
+  void/E!void results, first error cancels, FIFO reservations win cancellation, `wait`
+  drains reserved and running slots
 - `src/coroutines/test.zig`: scheduling and composition tests; primitive-specific
   tests stay beside their implementations
 - `src/coroutines/Executor.zig`: single-threaded intrusive run queue, `Task` (the

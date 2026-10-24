@@ -3,7 +3,8 @@
 Stackless coroutines and async I/O for Zig 0.17. Coroutines are explicit state
 machines: nothing switches stacks.
 
-- **Coroutines:** executor, `Machine`, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
+- **Coroutines:** executor, `Machine`, `Join`, `Race`, `Scope`, `Yield`, `Event`, `Semaphore`,
+  `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation; `WithTimeout` bounds
   any cancelable coroutine
 - **Threads:** cross-thread posts into a loop; `workers.Group` runs one loop per thread
@@ -127,6 +128,9 @@ Concurrency composes the same way:
   returns every result under the same names; positional `.{ A, B }` gives a tuple.
 - `Race(.{ .recv = io.Recv, .timeout = io.Timeout })` reports `winner` and still returns
   every result, so a losing success can be cleaned up.
+- `Scope(C)` runs a dynamic number of children as separate tasks in caller-owned slots.
+  The first child error cancels the rest; `scope.wait()` completes after all drain, and
+  `scope.reserve()` waits for a free slot before work such as an accept.
 - `io.WithTimeout(C)` bounds a child by a timer. A success always wins, even after
   expiry; an error after expiry becomes `error.Timeout`.
 
