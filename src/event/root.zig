@@ -56,6 +56,13 @@ pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
 pub const WithTimeout = @import("timeout.zig").WithTimeout;
 
+const net = @import("net.zig");
+pub const Address = net.Address;
+pub const NativeAddress = net.NativeAddress;
+pub const Listener = net.Listener;
+pub const Stream = net.Stream;
+pub const Dial = net.Dial;
+
 pub const Socket = if (builtin.os.tag == .windows) usize else std.c.fd_t;
 pub const SockAddr = switch (builtin.os.tag) {
     .linux => linux.sockaddr,
@@ -70,6 +77,25 @@ pub const Timespec = if (builtin.os.tag == .linux) linux.kernel_timespec else ex
 
 pub const NativeError = backend.NativeError;
 pub const now = backend.now;
+
+pub fn milliseconds(ms: u32) Timespec {
+    return .{ .sec = ms / std.time.ms_per_s, .nsec = (ms % std.time.ms_per_s) * std.time.ns_per_ms };
+}
+
+pub fn seconds(s: u32) Timespec {
+    return .{ .sec = s, .nsec = 0 };
+}
+
+/// Absolute deadline `duration` after `now()`, for operation and `Stream` deadlines.
+pub fn deadlineIn(duration: Timespec) Error!Timespec {
+    const start = try now();
+    const nsec = start.nsec + duration.nsec;
+
+    return .{
+        .sec = start.sec + duration.sec + @divFloor(nsec, std.time.ns_per_s),
+        .nsec = @mod(nsec, std.time.ns_per_s),
+    };
+}
 
 pub const AddressFamily = enum { ipv4, ipv6 };
 pub const tcpSocket = backend.tcpSocket;
@@ -117,4 +143,5 @@ test {
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");
+    _ = @import("tests/net.zig");
 }

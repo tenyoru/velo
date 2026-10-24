@@ -90,8 +90,7 @@ const co = velo.coroutines;
 const io = velo.event;
 
 const Echo = struct {
-    loop: *io.Loop,
-    fd: io.Socket,
+    stream: io.Stream,
     buffer: [4096]u8 = undefined,
 
     pub const Result = anyerror!void;
@@ -99,14 +98,14 @@ const Echo = struct {
 
     // Runs on the first poll, once pinned, so children may borrow `buffer`.
     pub fn start(self: *Echo) co.Next(Echo) {
-        return .{ .go = .{ .recv = io.Recv.init(self.loop, .{ .fd = self.fd, .buffer = &self.buffer }) } };
+        return .{ .go = .{ .recv = self.stream.recv(&self.buffer) } };
     }
 
     pub fn recv(self: *Echo, result: io.Error!usize) co.Next(Echo) {
         const n = result catch |err| return .{ .done = err };
         if (n == 0) return .{ .done = {} };
 
-        return .{ .go = .{ .send = io.SendAll.init(self.loop, .{ .fd = self.fd, .buffer = self.buffer[0..n] }) } };
+        return .{ .go = .{ .send = self.stream.sendAll(self.buffer[0..n]) } };
     }
 
     pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) co.Next(Echo) {
@@ -115,12 +114,22 @@ const Echo = struct {
     }
 };
 
-var frame: co.Frame(co.Machine(Echo)) = .init(.init(.{ .loop = &loop, .fd = fd }));
+var frame: co.Frame(co.Machine(Echo)) = .init(.init(.{ .stream = .init(&loop, fd) }));
 ```
 
 Cancellation reaches the active child and every later child; handlers still choose the
 result. A missing or mistyped handler fails to compile with its expected signature.
 Write `poll` by hand for custom wake sources.
+
+TCP helpers remove sockaddr handling:
+
+- `io.Address` is `std.Io.net.IpAddress`: `try .parseLiteral("[::1]:8080")`, printed with `{f}`.
+- `io.Listener.init(&loop, address, .{})` binds and listens; `listener.address` reports
+  the chosen port, and `listener.accept(.{})` yields sockets for `io.Stream.init(&loop, fd)`.
+- `io.Stream` methods `recv`, `send`, `readExact` and `sendAll` apply its `deadline`;
+  `close` it after its operations finish.
+- `io.Dial` connects a new socket and closes it on failure, timeout or cancellation.
+- `io.milliseconds`, `io.seconds` and `io.deadlineIn` build durations and deadlines.
 
 Concurrency composes the same way:
 

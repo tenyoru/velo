@@ -5,10 +5,9 @@ const io = velo.event;
 
 // One connection slot: accept, echo until the peer leaves, then accept again.
 const Connection = struct {
-    loop: *io.Loop,
-    listener: io.Socket,
-    /// Set before spawning to start echoing on an already accepted socket.
-    fd: ?io.Socket = null,
+    listener: *const io.Listener,
+    /// Set before spawning to start echoing on an already accepted stream.
+    stream: ?io.Stream = null,
     buffer: [4096]u8 = undefined,
 
     pub const Result = anyerror!void;
@@ -16,17 +15,18 @@ const Connection = struct {
     const Next = co.Next(@This());
 
     pub fn start(self: *@This()) Next {
-        if (self.fd != null) return self.receive();
+        if (self.stream != null) return self.receive();
 
-        return .{ .go = .{ .accept = io.Accept.init(self.loop, .{ .fd = self.listener }) } };
+        return .{ .go = .{ .accept = self.listener.accept(.{}) } };
     }
 
     pub fn accept(self: *@This(), result: io.Error!io.Socket) Next {
         // Cancellation and shutdown end the slot; reaching here means no socket to close.
-        self.fd = result catch |err| return .{
+        const fd = result catch |err| return .{
             .done = if (err == error.OperationCanceled) {} else err,
         };
 
+        self.stream = .init(self.listener.loop, fd);
         return self.receive();
     }
 
@@ -34,10 +34,7 @@ const Connection = struct {
         const n = result catch |err| return self.disconnected(err);
         if (n == 0) return self.disconnected({});
 
-        return .{ .go = .{ .send = io.SendAll.init(self.loop, .{
-            .fd = self.fd.?,
-            .buffer = self.buffer[0..n],
-        }) } };
+        return .{ .go = .{ .send = self.stream.?.sendAll(self.buffer[0..n]) } };
     }
 
     pub fn send(self: *@This(), result: co.ResultOf(io.SendAll)) Next {
@@ -47,14 +44,11 @@ const Connection = struct {
     }
 
     fn receive(self: *@This()) Next {
-        return .{ .go = .{ .recv = io.Recv.init(self.loop, .{
-            .fd = self.fd.?,
-            .buffer = &self.buffer,
-        }) } };
+        return .{ .go = .{ .recv = self.stream.?.recv(&self.buffer) } };
     }
 
     fn disconnected(self: *@This(), result: anyerror!void) Next {
-        // The finished child no longer borrows this socket.
+        // The finished child no longer borrows this stream.
         self.cleanup();
 
         result catch |err| if (err != error.OperationCanceled)
@@ -65,8 +59,8 @@ const Connection = struct {
     }
 
     fn cleanup(self: *@This()) void {
-        if (self.fd) |fd| close(fd);
-        self.fd = null;
+        if (self.stream) |stream| stream.close();
+        self.stream = null;
     }
 };
 
@@ -103,26 +97,13 @@ const Stopper = struct {
     }
 };
 
-fn close(fd: io.Socket) void {
-    io.closeSocket(fd) catch |err| std.debug.panic("closeSocket: {s}", .{@errorName(err)});
-}
-
 pub fn main(init: std.process.Init) !void {
     var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
-    const listener = try io.tcpSocket(.ipv4);
-    defer close(listener);
-
-    var address: io.SockAddr.in = .{
-        .port = 0,
-        .addr = std.mem.nativeToBig(u32, 0x7f000001),
-    };
-    var len: io.SockLen = @sizeOf(@TypeOf(address));
-
-    try io.bind(listener, @ptrCast(&address), len);
-    try io.listen(listener, 16);
-    try io.localAddress(listener, @ptrCast(&address), &len);
+    // Port 0 lets the kernel choose; `listener.address` reports the bound port.
+    var listener: io.Listener = try .init(&loop, try .parseLiteral("127.0.0.1:0"), .{ .backlog = 16 });
+    defer listener.deinit();
 
     var pool: velo.workers.Pool = undefined;
     try pool.init(init.gpa, &loop, 1);
@@ -131,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
     var handlers: [4]co.Frame(Handler) = undefined;
 
     for (&handlers) |*frame| {
-        frame.* = .init(.init(.{ .loop = &loop, .listener = listener }));
+        frame.* = .init(.init(.{ .listener = &listener }));
         loop.spawn(frame);
     }
     defer for (&handlers) |*frame| frame.coroutine.ctx.cleanup();
@@ -139,8 +120,8 @@ pub fn main(init: std.process.Init) !void {
     var stopper: co.Frame(Stopper) = .init(.{ .loop = &loop, .input = .init(&pool, .{}) });
 
     std.debug.print(
-        "Listening on 127.0.0.1:{d}; press Enter or send stdin EOF to stop.\n",
-        .{std.mem.bigToNative(u16, address.port)},
+        "Listening on {f}; press Enter or send stdin EOF to stop.\n",
+        .{listener.address},
     );
 
     // Runs until Enter or EOF shuts down the loop and every handler drains.
@@ -153,13 +134,13 @@ test "handler cancellation consumes queued children before closing sockets" {
         var loop = try io.Loop.init(.{ .entries = 8 });
         defer loop.deinit();
 
-        const fd = try io.tcpSocket(.ipv4);
-        defer if (!receiving) close(fd);
+        // An unbound socket parks accepts and receives until canceled.
+        var listener: io.Listener = .{ .loop = &loop, .fd = try io.tcpSocket(.ipv4), .address = undefined };
+        defer if (!receiving) listener.deinit();
 
         var frame: co.Frame(Handler) = .init(.init(.{
-            .loop = &loop,
-            .listener = fd,
-            .fd = if (receiving) fd else null,
+            .listener = &listener,
+            .stream = if (receiving) .init(&loop, listener.fd) else null,
         }));
 
         loop.spawn(&frame);
@@ -171,7 +152,7 @@ test "handler cancellation consumes queued children before closing sockets" {
         loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
         try frame.getResult();
-        try std.testing.expectEqual(null, frame.coroutine.ctx.fd);
+        try std.testing.expectEqual(null, frame.coroutine.ctx.stream);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
 }

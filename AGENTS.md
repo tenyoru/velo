@@ -77,6 +77,8 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+- `src/event/net.zig`: `Address` (std `IpAddress`), `NativeAddress`, `Listener`,
+  `Stream` with a shared deadline, `Dial` closing its socket unless connected
 - `src/event/timeout.zig`: `WithTimeout(C)`: lazy timer start, success beats expiry,
   error after expiry maps to `Timeout`
 
@@ -123,6 +125,8 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
 - `src/event/tests/portable.zig`: native socket/timer integration tests on all three OSes
 - `src/event/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
+- `src/event/tests/net.zig`: address conversion, listener/dial/stream exchange,
+  refused and pre-canceled dials
 - `src/event/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
   stream-helper tests
 
