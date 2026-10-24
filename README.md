@@ -3,7 +3,7 @@
 Stackless coroutines and async I/O for Zig 0.17. Coroutines are explicit state
 machines: nothing switches stacks.
 
-- **Coroutines:** executor, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
+- **Coroutines:** executor, `Machine`, `Join`, `Race`, `Yield`, `Event`, `Semaphore`, `Channel`
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
 - **Threads:** cross-thread posts into a loop; `workers.Group` runs one loop per thread
   with optional CPU pinning and thread names; fixed-size `workers.Pool` for blocking work
@@ -118,7 +118,14 @@ var frame: co.Frame(co.Machine(Echo)) = .init(.init(.{ .loop = &loop, .fd = fd }
 
 Cancellation reaches the active child and every later child; handlers still choose the
 result. A missing or mistyped handler fails to compile with its expected signature.
-Write `poll` by hand for fan-out or custom wake sources.
+Write `poll` by hand for custom wake sources.
+
+Concurrency composes the same way:
+
+- `Join(.{ .user = LoadUser, .orders = LoadOrders })` polls children on one task and
+  returns every result under the same names; positional `.{ A, B }` gives a tuple.
+- `Race(.{ .recv = io.Recv, .timeout = io.Timeout })` reports `winner` and still returns
+  every result, so a losing success can be cleaned up.
 
 ## Rules
 

@@ -97,109 +97,177 @@ pub fn Frame(comptime C: type) type {
     };
 }
 
-/// Pin until both finish; errors do not short-circuit, and the caller owns both results.
-/// Children require idempotent `pub fn cancel(*Self) void`, valid before polling.
-/// Cancellation requests unfinished children; keep polling to ready.
-pub fn Join(comptime A: type, comptime B: type) type {
-    const AT = ResultOf(A);
-    const BT = ResultOf(B);
+/// Children for `Join`/`Race`: a literal of coroutine types, named `.{ .user = A, .orders = B }`
+/// or positional `.{ A, B }`; children, results and winners keep those names.
+fn Set(comptime children: anytype) type {
+    const info = switch (@typeInfo(@TypeOf(children))) {
+        .@"struct" => |info| info,
+        else => @compileError("expected coroutine types such as .{ .name = C } or .{ C, D }"),
+    };
+    const count = info.field_names.len;
+    if (count == 0) @compileError("a group needs at least one child");
+
+    var child_types: [count]type = undefined;
+    var result_types: [count]type = undefined;
+    var poll_types: [count]type = undefined;
+    var poll_attrs: [count]std.lang.Type.Struct.FieldAttributes = undefined;
+
+    for (info.field_names, 0..) |name, i| {
+        const C = @field(children, name);
+        if (!@hasDecl(C, "cancel")) @compileError("child `" ++ name ++ "` needs `cancel`: " ++ @typeName(C));
+
+        child_types[i] = C;
+        result_types[i] = ResultOf(C);
+        poll_types[i] = Poll(ResultOf(C));
+        poll_attrs[i] = .{ .default_value_ptr = &@as(Poll(ResultOf(C)), .pending) };
+    }
+
+    const kids = child_types;
+    const results = result_types;
+    const polls = poll_types;
+    const attrs = poll_attrs;
 
     return struct {
-        a: A,
-        b: B,
-        a_result: Poll(AT) = .pending,
-        b_result: Poll(BT) = .pending,
+        pub const names = info.field_names;
+        pub const is_tuple = info.is_tuple;
+        pub const ready_types = results;
+        pub const Children = Reify(&kids);
+        pub const Results = Reify(&results);
+        pub const Polls = @Struct(.auto, null, names, &polls, &attrs);
+
+        fn Reify(comptime types: []const type) type {
+            if (is_tuple) return @Tuple(types);
+            return @Struct(.auto, null, names, types, &@splat(.{}));
+        }
+
+        pub fn pending(states: *const Polls) bool {
+            inline for (names) |name| {
+                if (@field(states, name) == .pending) return true;
+            }
+            return false;
+        }
+
+        /// Returns whether a canceled child remains pending.
+        pub fn cancelPending(children_ptr: *Children, states: *const Polls) bool {
+            var any = false;
+            inline for (names) |name| {
+                if (@field(states, name) == .pending) {
+                    @field(children_ptr, name).cancel();
+                    any = true;
+                }
+            }
+            return any;
+        }
+
+        pub fn collect(states: *const Polls, out: anytype) void {
+            inline for (names) |name| @field(out, name) = @field(states, name).ready;
+        }
+    };
+}
+
+/// Pin until all finish; errors do not short-circuit, and the caller owns every result.
+/// Children require idempotent `pub fn cancel(*Self) void`, valid before polling.
+/// Cancellation requests unfinished children; keep polling to ready.
+pub fn Join(comptime children: anytype) type {
+    const S = Set(children);
+
+    return struct {
+        children: S.Children,
+        polls: S.Polls = .{},
         task: ?*Task = null,
         cancel_requested: bool = false,
 
         const Self = @This();
-        pub const Result = struct { a: AT, b: BT };
+        pub const Result = S.Results;
+
+        pub fn init(kids: S.Children) Self {
+            return .{ .children = kids };
+        }
 
         pub fn poll(self: *Self, task: *Task) Poll(Result) {
-            assert(self.a_result == .pending or self.b_result == .pending);
+            assert(S.pending(&self.polls));
             self.task = task;
 
-            if (self.a_result == .pending) self.a_result = self.a.poll(task);
-            if (self.b_result == .pending) self.b_result = self.b.poll(task);
-            if (self.a_result == .pending or self.b_result == .pending) return .pending;
+            inline for (S.names) |name| {
+                const state = &@field(self.polls, name);
+                if (state.* == .pending) state.* = @field(self.children, name).poll(task);
+            }
+            if (S.pending(&self.polls)) return .pending;
 
-            return .{
-                .ready = .{
-                    .a = self.a_result.ready,
-                    .b = self.b_result.ready,
-                },
-            };
+            var result: Result = undefined;
+            S.collect(&self.polls, &result);
+            return .{ .ready = result };
         }
 
         pub fn cancel(self: *Self) void {
             if (self.cancel_requested) return;
 
             self.cancel_requested = true;
-            if (self.a_result == .pending) self.a.cancel();
-            if (self.b_result == .pending) self.b.cancel();
-
-            if (self.a_result == .pending or self.b_result == .pending) {
+            if (S.cancelPending(&self.children, &self.polls)) {
                 if (self.task) |task| task.wake();
             }
         }
     };
 }
 
-/// First observed ready (success or error) wins; same-poll ties go to `a`.
-/// Polls both before canceling.
-/// Uses `Join`'s pinning/cancellation contract; cancel and drain the unfinished loser.
-/// Returns both results unchanged; caller must clean up successful losing resources.
-pub fn Race(comptime A: type, comptime B: type) type {
-    const AT = ResultOf(A);
-    const BT = ResultOf(B);
+/// Named children only. First observed ready (success or error) wins; same-poll ties go
+/// to the earlier child. Polls all before canceling.
+/// Uses `Join`'s pinning/cancellation contract; cancel and drain unfinished losers.
+/// Returns every result unchanged; caller must clean up successful losing resources.
+pub fn Race(comptime children: anytype) type {
+    const S = Set(children);
+    if (S.is_tuple) @compileError("Race children need names, e.g. Race(.{ .recv = io.Recv, .timeout = io.Timeout })");
+    if (@hasField(S.Children, "winner")) @compileError("Race reserves the child name `winner`");
+
+    const W = std.meta.FieldEnum(S.Children);
 
     return struct {
-        a: A,
-        b: B,
-        a_result: Poll(AT) = .pending,
-        b_result: Poll(BT) = .pending,
+        children: S.Children,
+        polls: S.Polls = .{},
         winner: ?Winner = null,
         task: ?*Task = null,
         cancel_requested: bool = false,
 
         const Self = @This();
-        const Winner = enum { a, b };
-        pub const Result = struct { winner: Winner, a: AT, b: BT };
+        pub const Winner = W;
+        pub const Result = @Struct(
+            .auto,
+            null,
+            &[_][]const u8{"winner"} ++ S.names,
+            &[_]type{Winner} ++ S.ready_types,
+            &@splat(.{}),
+        );
+
+        pub fn init(kids: S.Children) Self {
+            return .{ .children = kids };
+        }
 
         pub fn poll(self: *Self, task: *Task) Poll(Result) {
-            assert(self.a_result == .pending or self.b_result == .pending);
+            assert(S.pending(&self.polls));
             self.task = task;
 
-            if (self.a_result == .pending) {
-                self.a_result = self.a.poll(task);
-                if (self.a_result == .ready and self.winner == null) self.winner = .a;
-            }
-
-            if (self.b_result == .pending) {
-                self.b_result = self.b.poll(task);
-                if (self.b_result == .ready and self.winner == null) self.winner = .b;
+            inline for (S.names) |name| {
+                const state = &@field(self.polls, name);
+                if (state.* == .pending) {
+                    state.* = @field(self.children, name).poll(task);
+                    if (state.* == .ready and self.winner == null) self.winner = @field(Winner, name);
+                }
             }
 
             if (self.winner != null) self.cancel();
-            if (self.a_result == .pending or self.b_result == .pending) return .pending;
+            if (S.pending(&self.polls)) return .pending;
 
-            return .{
-                .ready = .{
-                    .winner = self.winner.?,
-                    .a = self.a_result.ready,
-                    .b = self.b_result.ready,
-                },
-            };
+            var result: Result = undefined;
+            result.winner = self.winner.?;
+            S.collect(&self.polls, &result);
+            return .{ .ready = result };
         }
 
         pub fn cancel(self: *Self) void {
             if (self.cancel_requested) return;
 
             self.cancel_requested = true;
-            if (self.a_result == .pending) self.a.cancel();
-            if (self.b_result == .pending) self.b.cancel();
-
-            if (self.a_result == .pending or self.b_result == .pending) {
+            if (S.cancelPending(&self.children, &self.polls)) {
                 if (self.task) |task| task.wake();
             }
         }

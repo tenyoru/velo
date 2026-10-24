@@ -42,8 +42,8 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/ThreadGuard.zig`: test-only active-executor ownership checks; zero-sized
   in normal executables and in unsafe or single-threaded test builds
 - `src/coroutines/root.zig`: `velo.coroutines`; `Poll`, `ResultOf`, `Frame`, `Yield`,
-  `Join`, `Race`; its doc comment is the coroutine contract, read it before writing a
-  coroutine
+  N-ary named/positional `Join`, named `Race`; its doc comment is the coroutine
+  contract, read it before writing a coroutine
 - `src/coroutines/machine.zig`: `Machine(Ctx)`/`Next`: one active child per state,
   handlers named after states, `start` after pinning, cancellation forwarded to later
   children, comptime handler-signature diagnostics
@@ -74,7 +74,6 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
-
 - `src/workers/root.zig`: `velo.workers`; exports `Pool`, `Group`, and `numa`
 - `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
   completions and cancellation remain connected to the owning event loop

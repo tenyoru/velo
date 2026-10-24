@@ -97,6 +97,9 @@ const Consumer = struct {
     }
 };
 
+// Join polls both on one task; results keep the child names.
+const Pipeline = co.Join(.{ .producer = Producer, .consumer = Consumer });
+
 pub fn main() !void {
     var loop = try io.Loop.init(.{});
     defer loop.deinit();
@@ -107,14 +110,14 @@ pub fn main() !void {
     defer channel.deinit();
 
     // Join waits for both children; neither may outlive the frame or channel storage.
-    var frame: co.Frame(co.Join(Producer, Consumer)) = .init(.{
-        .a = .{ .send = channel.send(1) },
-        .b = .{ .recv = channel.recv() },
-    });
+    var frame: co.Frame(Pipeline) = .init(.init(.{
+        .producer = .{ .send = channel.send(1) },
+        .consumer = .{ .recv = channel.recv() },
+    }));
 
     const results = loop.block(&frame);
-    try results.a;
-    const sum = try results.b;
+    try results.producer;
+    const sum = try results.consumer;
 
     if (sum != 5050) return error.IncorrectSum;
 
@@ -131,12 +134,10 @@ test "pipeline joins both results and drains cancellation" {
         var channel = Channel.init(&storage);
         defer channel.deinit();
 
-        var frame: co.Frame(co.Join(Producer, Consumer)) = .{
-            .coroutine = .{
-                .a = .{ .send = channel.send(1) },
-                .b = .{ .recv = channel.recv() },
-            },
-        };
+        var frame: co.Frame(Pipeline) = .init(.init(.{
+            .producer = .{ .send = channel.send(1) },
+            .consumer = .{ .recv = channel.recv() },
+        }));
 
         loop.spawn(&frame);
         try std.testing.expect(loop.executor.runOne());
@@ -151,11 +152,11 @@ test "pipeline joins both results and drains cancellation" {
         const results = frame.getResult();
 
         if (canceled) {
-            try std.testing.expectError(error.Canceled, results.a);
-            try std.testing.expectError(error.Canceled, results.b);
+            try std.testing.expectError(error.Canceled, results.producer);
+            try std.testing.expectError(error.Canceled, results.consumer);
         } else {
-            try results.a;
-            try std.testing.expectEqual(5050, try results.b);
+            try results.producer;
+            try std.testing.expectEqual(5050, try results.consumer);
         }
 
         try std.testing.expectEqual(0, frame.task.outstanding_io);

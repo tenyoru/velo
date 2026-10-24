@@ -219,17 +219,17 @@ test "machine cancellation reaches children armed after a losing race" {
     defer event.deinit();
 
     var ex: co.Executor = .{};
-    var frame: co.Frame(co.Race(Machine(Rearm), co.Yield)) = .init(.{
-        .a = .init(.{ .event = &event }),
-        .b = .{},
-    });
+    var frame: co.Frame(co.Race(.{ .wait = Machine(Rearm), .yield = co.Yield })) = .init(.init(.{
+        .wait = .init(.{ .event = &event }),
+        .yield = .{},
+    }));
 
     ex.spawn(&frame.task);
     ex.run();
 
     const result = frame.getResult();
-    try std.testing.expectEqual(.b, result.winner);
-    try std.testing.expectEqual(2, result.a);
+    try std.testing.expectEqual(.yield, result.winner);
+    try std.testing.expectEqual(2, result.wait);
     try std.testing.expect(!frame.task.cancel_requested);
     try std.testing.expectEqual(0, frame.task.outstanding_io);
 }

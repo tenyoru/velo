@@ -234,11 +234,11 @@ fn GroupProbe(comptime T: type) type {
 test "join retains values and never repolls completed children" {
     const A = GroupProbe(u32);
     const B = GroupProbe(u8);
-    var frame: Frame(Join(A, B)) = .{
-        .coroutine = .{
+    var frame: Frame(Join(.{ .a = A, .b = B })) = .{
+        .coroutine = .init(.{
             .a = .{ .value = 7 },
             .b = .{ .value = 11, .left = 2 },
-        },
+        }),
     };
     var ex: Executor = .{};
 
@@ -252,12 +252,12 @@ test "join retains values and never repolls completed children" {
 
     try std.testing.expectEqual(7, frame.getResult().a);
     try std.testing.expectEqual(11, frame.getResult().b);
-    try std.testing.expectEqual(1, frame.coroutine.a.polls);
-    try std.testing.expectEqual(3, frame.coroutine.b.polls);
-    try std.testing.expectEqual(&frame.task, frame.coroutine.a.task.?);
-    try std.testing.expectEqual(&frame.task, frame.coroutine.b.task.?);
-    try std.testing.expectEqual(0, frame.coroutine.a.cancel_calls);
-    try std.testing.expectEqual(0, frame.coroutine.b.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.a.polls);
+    try std.testing.expectEqual(3, frame.coroutine.children.b.polls);
+    try std.testing.expectEqual(&frame.task, frame.coroutine.children.a.task.?);
+    try std.testing.expectEqual(&frame.task, frame.coroutine.children.b.task.?);
+    try std.testing.expectEqual(0, frame.coroutine.children.a.cancel_calls);
+    try std.testing.expectEqual(0, frame.coroutine.children.b.cancel_calls);
     try std.testing.expectEqual(0, frame.task.outstanding_io);
 }
 
@@ -267,9 +267,9 @@ test "nested joins retain nullable error union and void results" {
     const C = GroupProbe(void);
 
     inline for (.{ false, true }) |error_first| {
-        var frame: Frame(Join(Join(A, B), C)) = .{
-            .coroutine = .{
-                .a = .{
+        var frame: Frame(Join(.{ .a = Join(.{ .a = A, .b = B }), .b = C })) = .{
+            .coroutine = .init(.{
+                .a = .init(.{
                     .a = .{
                         .value = null,
                         .left = if (error_first) 2 else 0,
@@ -278,9 +278,9 @@ test "nested joins retain nullable error union and void results" {
                         .value = error.Failed,
                         .left = if (error_first) 0 else 2,
                     },
-                },
+                }),
                 .b = .{ .value = {}, .left = 1 },
-            },
+            }),
         };
         var ex: Executor = .{};
 
@@ -294,9 +294,9 @@ test "nested joins retain nullable error union and void results" {
         try std.testing.expectEqual(null, frame.getResult().a.a);
         try std.testing.expectError(error.Failed, frame.getResult().a.b);
         try std.testing.expectEqual({}, frame.getResult().b);
-        try std.testing.expectEqual(if (error_first) 3 else 1, frame.coroutine.a.a.polls);
-        try std.testing.expectEqual(if (error_first) 1 else 3, frame.coroutine.a.b.polls);
-        try std.testing.expectEqual(2, frame.coroutine.b.polls);
+        try std.testing.expectEqual(if (error_first) 3 else 1, frame.coroutine.children.a.children.a.polls);
+        try std.testing.expectEqual(if (error_first) 1 else 3, frame.coroutine.children.a.children.b.polls);
+        try std.testing.expectEqual(2, frame.coroutine.children.b.polls);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
 }
@@ -304,8 +304,8 @@ test "nested joins retain nullable error union and void results" {
 test "race keeps b winner while canceled a drains and preserves its result" {
     const A = GroupProbe(error{Canceled}!u32);
     const B = GroupProbe(u8);
-    var frame: Frame(Race(A, B)) = .{
-        .coroutine = .{
+    var frame: Frame(Race(.{ .a = A, .b = B })) = .{
+        .coroutine = .init(.{
             .a = .{
                 .value = 9,
                 .canceled_value = error.Canceled,
@@ -313,7 +313,7 @@ test "race keeps b winner while canceled a drains and preserves its result" {
                 .drain_left = 2,
             },
             .b = .{ .value = 42, .left = 1 },
-        },
+        }),
     };
     var ex: Executor = .{};
 
@@ -325,8 +325,8 @@ test "race keeps b winner while canceled a drains and preserves its result" {
     try std.testing.expect(ex.runOne());
 
     try std.testing.expectEqual(null, frame.result);
-    try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
-    try std.testing.expectEqual(0, frame.coroutine.b.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.a.cancel_calls);
+    try std.testing.expectEqual(0, frame.coroutine.children.b.cancel_calls);
     try std.testing.expectEqual(1, frame.task.outstanding_io);
 
     frame.coroutine.cancel();
@@ -342,9 +342,9 @@ test "race keeps b winner while canceled a drains and preserves its result" {
     try std.testing.expectEqual(.b, frame.getResult().winner);
     try std.testing.expectError(error.Canceled, frame.getResult().a);
     try std.testing.expectEqual(42, frame.getResult().b);
-    try std.testing.expectEqual(5, frame.coroutine.a.polls);
-    try std.testing.expectEqual(2, frame.coroutine.b.polls);
-    try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
+    try std.testing.expectEqual(5, frame.coroutine.children.a.polls);
+    try std.testing.expectEqual(2, frame.coroutine.children.b.polls);
+    try std.testing.expectEqual(1, frame.coroutine.children.a.cancel_calls);
     try std.testing.expectEqual(0, frame.task.outstanding_io);
 }
 
@@ -360,15 +360,15 @@ test "race breaks same poll ties in favor of a and returns both resources" {
     const Child = GroupProbe(Resource);
     var a_closed = false;
     var b_closed = false;
-    var frame: Frame(Race(Child, Child)) = .{
-        .coroutine = .{
+    var frame: Frame(Race(.{ .a = Child, .b = Child })) = .{
+        .coroutine = .init(.{
             .a = .{
                 .value = .{ .closed = &a_closed },
             },
             .b = .{
                 .value = .{ .closed = &b_closed },
             },
-        },
+        }),
     };
     var ex: Executor = .{};
 
@@ -380,8 +380,8 @@ test "race breaks same poll ties in favor of a and returns both resources" {
     try std.testing.expectEqual(.a, result.winner);
     try std.testing.expectEqual(&a_closed, result.a.closed);
     try std.testing.expectEqual(&b_closed, result.b.closed);
-    try std.testing.expectEqual(0, frame.coroutine.a.cancel_calls);
-    try std.testing.expectEqual(0, frame.coroutine.b.cancel_calls);
+    try std.testing.expectEqual(0, frame.coroutine.children.a.cancel_calls);
+    try std.testing.expectEqual(0, frame.coroutine.children.b.cancel_calls);
 
     result.a.close();
     result.b.close();
@@ -392,15 +392,15 @@ test "race breaks same poll ties in favor of a and returns both resources" {
 test "race cancellation before polling retains child results and first observed winner" {
     const A = GroupProbe(error{Canceled}!void);
     const B = GroupProbe(?u16);
-    var frame: Frame(Race(A, B)) = .{
-        .coroutine = .{
+    var frame: Frame(Race(.{ .a = A, .b = B })) = .{
+        .coroutine = .init(.{
             .a = .{
                 .value = {},
                 .canceled_value = error.Canceled,
                 .drain_left = 1,
             },
             .b = .{ .value = 3, .canceled_value = null },
-        },
+        }),
     };
 
     frame.coroutine.cancel();
@@ -419,9 +419,9 @@ test "race cancellation before polling retains child results and first observed 
     try std.testing.expectEqual(.b, frame.getResult().winner);
     try std.testing.expectError(error.Canceled, frame.getResult().a);
     try std.testing.expectEqual(null, frame.getResult().b);
-    try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
-    try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
-    try std.testing.expectEqual(1, frame.coroutine.b.polls);
+    try std.testing.expectEqual(1, frame.coroutine.children.a.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.b.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.b.polls);
     try std.testing.expectEqual(0, frame.task.outstanding_io);
 }
 
@@ -429,9 +429,9 @@ test "group cancellation wakes parked children and drains both exactly once" {
     const Child = GroupProbe(error{Canceled}!void);
 
     inline for (.{ false, true }) |is_race| {
-        const Group = if (is_race) Race(Child, Child) else Join(Child, Child);
+        const Group = if (is_race) Race(.{ .a = Child, .b = Child }) else Join(.{ .a = Child, .b = Child });
         var frame: Frame(Group) = .{
-            .coroutine = .{
+            .coroutine = .init(.{
                 .a = .{
                     .value = {},
                     .canceled_value = error.Canceled,
@@ -446,7 +446,7 @@ test "group cancellation wakes parked children and drains both exactly once" {
                     .wake_pending = false,
                     .drain_left = 1,
                 },
-            },
+            }),
         };
         var ex: Executor = .{};
 
@@ -469,8 +469,8 @@ test "group cancellation wakes parked children and drains both exactly once" {
         try std.testing.expectError(error.Canceled, frame.getResult().a);
         try std.testing.expectError(error.Canceled, frame.getResult().b);
         if (is_race) try std.testing.expectEqual(.a, frame.getResult().winner);
-        try std.testing.expectEqual(1, frame.coroutine.a.cancel_calls);
-        try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
+        try std.testing.expectEqual(1, frame.coroutine.children.a.cancel_calls);
+        try std.testing.expectEqual(1, frame.coroutine.children.b.cancel_calls);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
 }
@@ -478,8 +478,8 @@ test "group cancellation wakes parked children and drains both exactly once" {
 test "join cancellation skips completed children" {
     const A = GroupProbe(void);
     const B = GroupProbe(error{Canceled}!void);
-    var frame: Frame(Join(A, B)) = .{
-        .coroutine = .{
+    var frame: Frame(Join(.{ .a = A, .b = B })) = .{
+        .coroutine = .init(.{
             .a = .{ .value = {} },
             .b = .{
                 .value = {},
@@ -488,7 +488,7 @@ test "join cancellation skips completed children" {
                 .wake_pending = false,
                 .drain_left = 1,
             },
-        },
+        }),
     };
     var ex: Executor = .{};
 
@@ -501,10 +501,45 @@ test "join cancellation skips completed children" {
 
     try std.testing.expectEqual({}, frame.getResult().a);
     try std.testing.expectError(error.Canceled, frame.getResult().b);
-    try std.testing.expectEqual(1, frame.coroutine.a.polls);
-    try std.testing.expectEqual(0, frame.coroutine.a.cancel_calls);
-    try std.testing.expectEqual(1, frame.coroutine.b.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.a.polls);
+    try std.testing.expectEqual(0, frame.coroutine.children.a.cancel_calls);
+    try std.testing.expectEqual(1, frame.coroutine.children.b.cancel_calls);
     try std.testing.expectEqual(0, frame.task.outstanding_io);
+}
+
+test "join and race accept three positional or named children" {
+    const P = GroupProbe(u8);
+
+    comptime assert(Join(.{ .a = P, .b = P }) == Join(.{ .a = P, .b = P }));
+    comptime assert(@typeInfo(Join(.{ P, P, P }).Result).@"struct".is_tuple);
+
+    var ex: Executor = .{};
+    var joined: Frame(Join(.{ P, P, P })) = .init(.init(.{
+        .{ .value = 1, .left = 2 },
+        .{ .value = 2 },
+        .{ .value = 3, .left = 1 },
+    }));
+    var raced: Frame(Race(.{ .slow = P, .tie = P, .late = P })) = .init(.init(.{
+        .slow = .{ .value = 1, .canceled_value = 9, .left = 1 },
+        .tie = .{ .value = 2 },
+        .late = .{ .value = 3 },
+    }));
+
+    ex.spawn(&joined.task);
+    ex.spawn(&raced.task);
+    ex.run();
+
+    const all = joined.getResult();
+    try std.testing.expectEqual(.{ 1, 2, 3 }, .{ all[0], all[1], all[2] });
+    try std.testing.expectEqual(1, joined.coroutine.children[1].polls);
+    try std.testing.expectEqual(3, joined.coroutine.children[0].polls);
+
+    const first = raced.getResult();
+    try std.testing.expectEqual(.tie, first.winner);
+    try std.testing.expectEqual(.{ 9, 2, 3 }, .{ first.slow, first.tie, first.late });
+    try std.testing.expectEqual(1, raced.coroutine.children.slow.cancel_calls);
+    try std.testing.expectEqual(0, raced.coroutine.children.late.cancel_calls);
+    try std.testing.expectEqual(0, raced.task.outstanding_io);
 }
 
 test "frame cancellation supports children aligned above Task" {
@@ -543,13 +578,13 @@ test "frame cancellation supports children aligned above Task" {
 
 test "yield can be canceled and composed in join and race" {
     inline for (.{ false, true }) |is_race| {
-        const Group = if (is_race) Race(Yield, Yield) else Join(Yield, Yield);
+        const Group = if (is_race) Race(.{ .a = Yield, .b = Yield }) else Join(.{ .a = Yield, .b = Yield });
         var ex: Executor = .{};
         var frame: Frame(Group) = .{
-            .coroutine = .{
+            .coroutine = .init(.{
                 .a = .{},
                 .b = .{},
-            },
+            }),
         };
 
         ex.spawn(&frame.task);
@@ -583,14 +618,14 @@ test "task cancellation drains joins and races of borrowed primitive waits" {
         defer sem.deinit();
 
         const Group = if (is_race)
-            Race(Event.Wait, Semaphore.Acquire)
+            Race(.{ .a = Event.Wait, .b = Semaphore.Acquire })
         else
-            Join(Event.Wait, Semaphore.Acquire);
+            Join(.{ .a = Event.Wait, .b = Semaphore.Acquire });
         var frame: Frame(Group) = .{
-            .coroutine = .{
+            .coroutine = .init(.{
                 .a = event.wait(),
                 .b = sem.acquire(),
-            },
+            }),
         };
         var ex: Executor = .{};
 
@@ -620,11 +655,11 @@ test "race preserves both channel resources granted before its next poll" {
     defer channel.deinit();
 
     var ex: Executor = .{};
-    var race: Frame(Race(Ch.Recv, Ch.Recv)) = .{
-        .coroutine = .{
+    var race: Frame(Race(.{ .a = Ch.Recv, .b = Ch.Recv })) = .{
+        .coroutine = .init(.{
             .a = channel.recv(),
             .b = channel.recv(),
-        },
+        }),
     };
 
     ex.spawn(&race.task);
