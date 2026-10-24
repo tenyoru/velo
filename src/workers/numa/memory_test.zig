@@ -229,6 +229,9 @@ fn mappedBytes() !usize {
     var size: usize = 0;
     var lines = std.mem.tokenizeScalar(u8, buffer[0..len], '\n');
     while (lines.next()) |line| {
+        // Stack growth is unrelated to leaked mmap reservations. Optimized builds may
+        // first touch deeper stack pages between snapshots, including in this reader.
+        if (std.mem.endsWith(u8, line, "[stack]")) continue;
         const dash = std.mem.indexOfScalar(u8, line, '-') orelse return error.InvalidMaps;
         const space = std.mem.indexOfScalar(u8, line, ' ') orelse return error.InvalidMaps;
         const start = try std.fmt.parseInt(usize, line[0..dash], 16);
@@ -274,7 +277,7 @@ test "NUMA failed advice releases aligned reservations and defaults need no advi
             try testing.expectEqual(before, try mappedBytes());
         }
     };
-    // Seccomp is irreversible and fork leaves one thread, so procfs map totals stay stable.
+    // Seccomp is irreversible; fork isolates the test's non-stack mapping totals.
     const pid = linux.fork();
     if (linux.errno(pid) != .SUCCESS) return error.TestForkFailed;
     if (pid == 0) {
