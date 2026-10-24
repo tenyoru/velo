@@ -40,6 +40,15 @@ pub const LoopOptions = struct {
     /// leave the descriptors unchanged throughout that lifetime.
     /// Contained file transfers use fixed buffers; registration failures fail initialization.
     buffers: []const []u8 = &.{},
+    /// Calling thread's Linux io_uring async-worker CPU IDs, borrowed only during init;
+    /// duplicates are harmless. The kernel may share these workers across its rings.
+    /// Empty leaves the kernel default untouched without an affinity syscall. Epoll and
+    /// other backends ignore this; it does not configure application pools or all OS workers.
+    /// Requires Linux 5.14+; registration failures fail init without automatic fallback.
+    /// Effective affinity remains subject to the kernel's cpuset and CPU availability rules.
+    /// Some kernels intersect this with inherited user affinity when they overlap;
+    /// use CPUs disjoint from a pinned loop CPU to keep worker execution off that CPU.
+    iowq_cpus: []const usize = &.{},
 };
 
 pub const Control = @import("Control.zig");
@@ -100,7 +109,10 @@ pub const Close = Operation.Coroutine(.close);
 pub const Timeout = Operation.Coroutine(.timeout);
 
 test {
-    if (builtin.os.tag == .linux) _ = @import("tests/uring.zig");
+    if (builtin.os.tag == .linux) {
+        _ = @import("tests/uring.zig");
+        _ = @import("tests/iowq.zig");
+    }
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");

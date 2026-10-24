@@ -7,6 +7,8 @@ machines: nothing switches stacks.
 - **Network:** TCP and UDP with deadlines, timeouts, and cancellation
 - **Threads:** cross-thread posts into a loop; `workers.Group` runs one loop per thread
   with optional CPU pinning and thread names; fixed-size `workers.Pool` for blocking work
+- **NUMA (Linux):** topology discovery, explicit loop/worker placement, bound or preferred
+  memory and allocator backing, optional prefault/huge-page hints, and io-wq affinity
 - **Files:** positional reads/writes through io_uring (Linux), probed AIO/kqueue
   (macOS), or overlapped IOCP (Windows), with worker fallback; full or data-only
   (Linux `fdatasync`) sync uses io_uring or workers, and open/create/close/preallocation
@@ -41,6 +43,7 @@ flowchart LR
   and drains such loops, each on its own thread.
 
 Public modules: `velo.coroutines`, `velo.event`, `velo.workers`, and `velo.fs`.
+Placement APIs live in `velo.workers.numa`.
 `velo.fs.worker` exposes explicitly worker-backed file operations.
 
 ## Usage
@@ -99,6 +102,7 @@ zig build run-echo                     # TCP echo server; press Enter to stop
 zig build run-files -- /tmp/velo-demo  # create, write, sync, and read a file
 zig build run-flusher                  # coalesced deadlines and graceful worker drain
 zig build run-shards -- 4 10000         # bounded request/reply across a four-loop Group
+zig build run-shards -- 4 10000 auto numa  # Linux: placed state and per-shard buffers
 ```
 
 `flusher` closes admission and finishes pending generations before global shutdown;
@@ -106,6 +110,41 @@ shutdown alone may skip queued worker jobs. `shards` keeps requests pinned throu
 their replies, including cancellation. Both carry lifecycle tests.
 `shards` reports throughput, mean request/reply latency, and shutdown/join time;
 its timed exchange includes routing and result validation.
+
+### Explicit NUMA placement
+
+Use `const numa = velo.workers.numa`. Placement is opt-in: default loops and pools
+do no topology discovery or affinity/policy changes. `Topology.discover` reports
+permitted CPUs, memory nodes, core siblings, and distances. `numa.plan(allocator,
+&topology, .{ .count = 4, .memory = .bind })` spreads cores across nodes before SMT;
+free the returned slice after use. Pass it as `Group.Options.placement`.
+
+`Group.Options.pin` has been replaced by the planner. With a null topology and
+the default `.memory = .none`, planning selects sorted allowed CPUs, including the
+existing 64-bit Windows current-processor-group affinity support. NUMA memory
+policies and topology discovery remain Linux-only.
+
+`Region.init(bytes, .{ .bind = node })` creates fresh placed memory; `.prefer` allows
+fallback under pressure. `Region.initWithOptions` adds alignment, `.prefault`, and
+`.huge_pages` options. Prefaulting requires Linux 5.14+; huge pages are a hint, not a
+guarantee. `PageAllocator.init(policy, options)` provides zero-filled page backing
+for standard arenas/debug allocators; use those for small objects.
+
+`Group.initWithHooks` prepares per-shard buffers before registration and cleans them
+up after loop teardown. Pools must drain and join before that teardown.
+`Pool.initWithOptions` accepts `.count` and a Linux `.cpus` set;
+`Topology.nodeCpus` supplies a caller-owned node CPU list. `LoopOptions.iowq_cpus`
+configures Linux io_uring workers, with registration errors propagated. Some kernels
+intersect overlapping masks with inherited user affinity; the shard example excludes
+the loop CPU from its worker set when another node CPU is available.
+
+Thread policies affect fresh faults, not
+existing heap pages; kernel-owned I/O memory is outside the placement guarantee.
+Topology is a snapshot, and binding does not guarantee future allocations succeed.
+The NUMA shard example uses placed arenas, prefaulted buffers, and a node-restricted
+blocking pool per shard. Warmup jobs verify worker affinity before exchange starts.
+It reports same-node and cross-node requests; registered buffers demonstrate setup,
+not fixed-buffer file-transfer performance.
 
 ## Development
 
@@ -139,3 +178,27 @@ not network latency. TCP workloads need roughly two descriptors per connection;
 backend; native macOS/Windows measurements are required for their scaling claims.
 Epoll measurements use a fixed deadline-tree seed, reported as `deadline_seed` in
 JSON, so ASLR does not change the tree shape between runs.
+
+### NUMA measurements (Linux)
+
+```sh
+zig build bench -Doptimize=ReleaseFast
+./zig-out/bin/numa unpinned 2 64 1000000
+./zig-out/bin/numa pinned   2 64 1000000
+./zig-out/bin/numa local    2 64 1000000
+./zig-out/bin/numa remote   2 64 1000000
+./zig-out/bin/numa local    2 64 1000000 prefault
+./zig-out/bin/numa local    2 64 1000000 huge
+```
+
+Arguments: `mode [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`.
+Preparation defaults to `lazy`; `prefault` and `huge` require local/remote mode.
+The same dependent-memory workload runs in every mode; allocation, initialization,
+and warmup are measured separately from steady traversal. Initialization already
+writes every page, so prefaulting primarily moves work into the allocation phase.
+The first two modes use coordinator-first-touched pages with inherited memory policy;
+`local` and `remote` bind pages before touching them. Output reports CPU placement,
+post-run residency samples, throughput, elapsed nanoseconds per access, and actual
+huge-page bytes from overlapping VMAs (which can include neighboring mappings).
+`remote` explicitly skips without a different permitted memory node. Use a real
+multi-node host and repeated runs for locality claims; single-node runs are smoke tests.

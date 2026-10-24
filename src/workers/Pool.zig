@@ -2,10 +2,12 @@
 //! Initialize in place; pin pool and loop through deinit. Only actions run off-thread.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const co = @import("../coroutines/root.zig");
 const Control = @import("../event/Control.zig");
 const Loop = @import("../event/root.zig").Loop;
+const numa = @import("numa/root.zig");
 const states = @import("../state.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 
@@ -22,18 +24,35 @@ queue: std.DoublyLinkedList = .{},
 stopping: bool = false,
 outstanding: usize = 0,
 
+pub const Options = struct {
+    count: usize,
+    /// Borrowed until initWithOptions returns; empty preserves inherited affinity.
+    /// Every worker uses the entire Linux-only set; memory policy stays inherited.
+    cpus: []const usize = &.{},
+};
+
 pub fn init(
     pool: *WorkerPool,
     allocator: std.mem.Allocator,
     loop: *Loop,
     thread_count: usize,
 ) !void {
+    return pool.initWithOptions(allocator, loop, .{ .count = thread_count });
+}
+
+pub fn initWithOptions(
+    pool: *WorkerPool,
+    allocator: std.mem.Allocator,
+    loop: *Loop,
+    options: Options,
+) !void {
     const entered = if (ThreadGuard.enabled) loop.executor.thread_guard.enter() else false;
     defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
 
-    if (thread_count == 0) return error.InvalidWorkerCount;
+    if (options.count == 0) return error.InvalidWorkerCount;
+    if (builtin.os.tag != .linux and options.cpus.len != 0) return error.Unsupported;
 
-    const threads = try allocator.alloc(std.Thread, thread_count);
+    const threads = try allocator.alloc(std.Thread, options.count);
     pool.* = .{
         .allocator = allocator,
         .loop = loop,
@@ -42,6 +61,7 @@ pub fn init(
         .threads = threads,
     };
 
+    var startup: Startup = .{ .cpus = options.cpus, .remaining = options.count };
     var started: usize = 0;
     errdefer {
         pool.stopWorkers(started);
@@ -50,9 +70,17 @@ pub fn init(
     }
 
     for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, worker, .{pool});
+        thread.* = try std.Thread.spawn(.{}, worker, .{ pool, if (options.cpus.len == 0) null else &startup });
         started += 1;
     }
+
+    if (options.cpus.len == 0) return;
+    const io = pool.threaded.io();
+    pool.mutex.lockUncancelable(io);
+    while (startup.remaining != 0) pool.condition.waitUncancelable(io, &pool.mutex);
+    const failure = startup.failure;
+    pool.mutex.unlock(io);
+    if (failure) |err| return err;
 }
 
 /// Consume every result before deinit.
@@ -120,8 +148,28 @@ const Job = struct {
     }
 };
 
-fn worker(pool: *WorkerPool) void {
+const Startup = struct {
+    cpus: []const usize,
+    remaining: usize,
+    failure: ?anyerror = null,
+};
+
+fn worker(pool: *WorkerPool, startup: ?*Startup) void {
     const io = pool.threaded.io();
+    if (startup) |ready| {
+        var failure: ?anyerror = null;
+        numa.pin(ready.cpus) catch |err| {
+            failure = err;
+        };
+        pool.mutex.lockUncancelable(io);
+        if (ready.failure == null) ready.failure = failure;
+        ready.remaining -= 1;
+        // The initializer and idle workers share this condition.
+        if (ready.remaining == 0) pool.condition.broadcast(io);
+        pool.mutex.unlock(io);
+        if (failure != null) return;
+    }
+
     const control = &pool.loop.control;
 
     while (true) {
@@ -241,4 +289,8 @@ pub fn Work(comptime C: type) type {
             self.result = if (canceled) error.OperationCanceled else self.action.run(io);
         }
     };
+}
+
+test {
+    _ = @import("pool_placement_test.zig");
 }

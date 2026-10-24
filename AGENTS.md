@@ -26,8 +26,10 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples bench`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
 - `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards> [-- args]`: run an example
-- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`
+- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability` and `numa`
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
+- `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
+- `zig build run-shards -- 4 10000 auto numa`: Linux placed shards with per-loop registered buffers
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
   in Debug/ReleaseSafe
 - Release: bump `.version` in `build.zig.zon`, commit, push tag `v<version>`;
@@ -57,7 +59,7 @@ stackful fibers), so coroutines here are explicit state machines.
   control forwarders; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
 - `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
-  submissions and cancellation
+  submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration
 - `src/event/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
   fd buckets, run queue, deadline treap
 - `src/event/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
@@ -70,13 +72,27 @@ stackful fibers), so coroutines here are explicit state machines.
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
 
-- `src/workers/root.zig`: `velo.workers`; exports `Pool` and `Group`
+- `src/workers/root.zig`: `velo.workers`; exports `Pool`, `Group`, and `numa`
 - `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
   completions and cancellation remain connected to the owning event loop
 - `src/workers/Group.zig`: one loop per thread; pin/name/create in-thread, `entry`
   seeding, all-or-nothing start with cancel-and-drain rollback, close barrier
-  before loop deinit
+  before loop deinit; Linux explicit placement and `initWithHooks` preparation before
+  buffer registration, cleanup after loop storage release; `Options.pin` replaced by `numa.plan`
 - `src/workers/test.zig`: worker pool and group tests
+- `src/workers/group_placement_test.zig`, `pool_placement_test.zig`: NUMA/affinity,
+  preparation rollback, per-shard buffer lifetime, worker startup and completion tests
+- `src/workers/numa/root.zig`: dynamic Linux affinity and existing Windows CPU-only
+  affinity; Linux memory policy, aligned bound/preferred `Region`, prefault/THP hints
+  and nonfaulting residency queries; memory APIs unsupported elsewhere
+- `src/workers/numa/Topology.zig`: effective CPUs, physical node IDs, memory permissions,
+  unique core keys and node distances; sysfs/procfs discovery and sparse/restricted fixtures
+- `src/workers/numa/Plan.zig`: shared core-first node-round-robin placement; null
+  topology gives a CPU-only plan without NUMA discovery
+- `src/workers/numa/PageAllocator.zig`, `memory_test.zig`: zero-filled placed page
+  backing for standard allocators, over-alignment, prefault, THP and cleanup tests
+- `src/event/tests/iowq.zig`: forced async pipe reads, observed kernel-worker affinity,
+  default/epoll behavior and registration-error tests
 
 - `src/fs/root.zig`: `velo.fs`; operations select from
   `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers;
@@ -112,9 +128,12 @@ stackful fibers), so coroutines here are explicit state machines.
   timer rearm and graceful/canceled worker drain
 - `examples/shards.zig`: bounded cross-loop requests over `workers.Group`, pinned
   replies and coordinated shutdown; optional shard count, requests per shard and
-  Linux epoll selection
+  Linux epoll selection; optional `numa` uses placed arenas, prefaulted buffers,
+  node-restricted pools/io-wq, worker warmup and cross-node post counts
 - `bench/scalability.zig`: portable TCP/timer workloads with separate admission,
   fixed ready work, expiration, cancellation and drain timings; included in test/check
+- `bench/numa.zig`: Linux dependent-memory benchmark, unpinned/pinned/local/remote;
+  separately measured setup/warmup, CPU/residency/THP observation; included in test/check
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in
   `build.zig`, run by hand
 
@@ -207,6 +226,34 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   Native success still awaits a packet. Worker transfers alone use a private
   event's low bit to suppress IOCP packets; APC-based std.Io.Threaded transfers
   cannot be used on associated handles. Windows Sync remains synchronous/worker-backed.
+- **Linux NUMA** (checked 2026-10-23):
+  [mbind](https://man7.org/linux/man-pages/man2/mbind.2.html),
+  [set_mempolicy](https://man7.org/linux/man-pages/man2/set_mempolicy.2.html),
+  [get_mempolicy](https://man7.org/linux/man-pages/man2/get_mempolicy.2.html),
+  [move_pages](https://man7.org/linux/man-pages/man2/move_pages.2.html),
+  [sched_setaffinity](https://man7.org/linux/man-pages/man2/sched_setaffinity.2.html),
+  [pthread_create](https://man7.org/linux/man-pages/man3/pthread_create.3.html),
+  [sysfs node ABI](https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-devices-node):
+  bind before first writes; policy is not migration or a future-fault success guarantee.
+  Thread affinity/policy inheritance matters for pools; explicit requests never silently
+  degrade. Topology is a snapshot; kernel-owned I/O memory is outside user-region guarantees.
+  Linux [`get_nodes`](https://github.com/torvalds/linux/blob/v6.12/mm/mempolicy.c)
+  imports `maxnode - 1` bits. Map regions inaccessible until mbind completes:
+  [`populate_vma_page_range`](https://github.com/torvalds/linux/blob/v6.12/mm/gup.c)
+  skips PROT_NONE, preventing MCL_FUTURE from allocating pages under the old policy.
+- **NUMA preparation and io-wq** (checked 2026-10-23):
+  [madvise](https://man7.org/linux/man-pages/man2/madvise.2.html):
+  `MADV_POPULATE_WRITE` is 23, populates writable pages once, can fail partially and
+  does not prevent reclaim/OOM; `MADV_HUGEPAGE` only advises. Align to the host's
+  `hpage_pmd_size` for THP experiments; inspect actual mappings.
+  [io_uring_register](https://man7.org/linux/man-pages/man2/io_uring_register.2.html):
+  `IORING_REGISTER_IOWQ_AFF` takes the mask size in bytes; empty options issue no
+  affinity syscall. Worker masks can be shared between a thread's rings.
+  [scheduler affinity](https://github.com/torvalds/linux/blob/master/kernel/sched/core.c)
+  and [io-wq worker creation](https://github.com/torvalds/linux/blob/master/io_uring/io-wq.c):
+  inherited `user_cpus_ptr` can narrow overlapping masks in `set_cpus_allowed_ptr`.
+  Disjoint worker/loop CPU sets were verified on Linux 7.2.6; inspect actual worker
+  affinity rather than treating registration success as an effective-mask guarantee.
 
 Rules:
 

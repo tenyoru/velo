@@ -20,6 +20,7 @@
 
 !/bench/
 !/bench/scalability.zig
+!/bench/numa.zig
 
 !/.github/
 !/.github/workflows/

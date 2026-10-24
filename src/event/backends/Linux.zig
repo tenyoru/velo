@@ -48,6 +48,18 @@ pub fn initWithBackend(options: Options, selected: Backend) !Loop {
     errdefer if (loop.epoll) |*state| Epoll.deinit(state) else loop.ring.deinit();
 
     // Registration errors must not enter the setup-only automatic fallback above.
+    if (loop.epoll == null and options.iowq_cpus.len != 0) {
+        const allocator = std.heap.page_allocator;
+        var mask = try iowqMask(allocator, options.iowq_cpus);
+        defer mask.deinit(allocator);
+        try checkIowqAffinity(linux.errno(linux.io_uring_register(
+            loop.ring.fd,
+            .REGISTER_IOWQ_AFF,
+            mask.masks,
+            @intCast(mask.bit_length / 8),
+        )));
+    }
+
     if (loop.epoll == null and options.buffers.len != 0) {
         var vectors: [64]std.posix.iovec = undefined;
         if (options.buffers.len > vectors.len) return error.TooManyBuffers;
@@ -91,6 +103,26 @@ pub fn initWithBackend(options: Options, selected: Backend) !Loop {
     }
 
     return loop;
+}
+
+fn iowqMask(allocator: std.mem.Allocator, cpus: []const usize) !std.DynamicBitSetUnmanaged {
+    assert(cpus.len != 0);
+    const word_bits = @bitSizeOf(usize);
+    const bits = (try std.math.add(usize, std.mem.max(usize, cpus), word_bits)) &
+        ~@as(usize, word_bits - 1);
+    _ = std.math.cast(u32, bits / 8) orelse return error.Overflow;
+    var mask = try std.DynamicBitSetUnmanaged.initEmpty(allocator, bits);
+    for (cpus) |cpu| mask.set(cpu);
+    return mask;
+}
+
+fn checkIowqAffinity(e: linux.E) !void {
+    switch (e) {
+        .SUCCESS => {},
+        .NOSYS, .OPNOTSUPP, .INVAL => return error.IowqAffinityUnsupported,
+        .PERM, .ACCES => return error.PermissionDenied,
+        else => return Uring.mapError(e),
+    }
 }
 
 fn signalLoop(control: *Control) void {
@@ -347,4 +379,27 @@ test "io_uring probe requires networking opcodes but not optional files" {
     probe.last_op = .RECV;
     probe.ops[@backingInt(linux.IORING_OP.SEND)].flags = 0;
     try std.testing.expect(!supportsAll(probe));
+}
+
+test "io-wq affinity mask supports sparse CPU IDs and validates overflow" {
+    var mask = try iowqMask(std.testing.allocator, &.{ 0, 63, 64, 4097, 4097 });
+    defer mask.deinit(std.testing.allocator);
+    try std.testing.expectEqual(4, mask.count());
+    for ([_]usize{ 0, 63, 64, 4097 }) |cpu| try std.testing.expect(mask.isSet(cpu));
+    try std.testing.expect(!mask.isSet(4096));
+    try std.testing.expectEqual(0, mask.bit_length % @bitSizeOf(usize));
+    try std.testing.expectError(error.Overflow, iowqMask(std.testing.allocator, &.{std.math.maxInt(usize)}));
+    if (@bitSizeOf(usize) > 32) {
+        try std.testing.expectError(error.Overflow, iowqMask(std.testing.allocator, &.{@as(usize, std.math.maxInt(u32)) * 8}));
+    }
+}
+
+test "io-wq affinity registration errno contract" {
+    try checkIowqAffinity(.SUCCESS);
+    for ([_]linux.E{ .NOSYS, .OPNOTSUPP, .INVAL }) |e|
+        try std.testing.expectError(error.IowqAffinityUnsupported, checkIowqAffinity(e));
+    for ([_]linux.E{ .PERM, .ACCES }) |e|
+        try std.testing.expectError(error.PermissionDenied, checkIowqAffinity(e));
+    try std.testing.expectError(error.SystemResources, checkIowqAffinity(.NOMEM));
+    try std.testing.expectError(error.BadFileDescriptor, checkIowqAffinity(.BADF));
 }

@@ -4,6 +4,7 @@ const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
 const WorkerPool = @import("Pool.zig");
 const Group = @import("Group.zig");
+const numa = @import("numa/root.zig");
 const support = @import("../event/tests/support.zig");
 const testing = std.testing;
 
@@ -425,51 +426,44 @@ test "group startup failure cancels started loops" {
     }
 }
 
-test "group pins each thread to one allowed CPU" {
-    const Noop = struct {
-        fn entry(_: void, _: *io.Loop, _: usize) void {}
-    };
+test "group uses the shared CPU-only plan on Linux and Windows" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .windows) return error.SkipZigTest;
+    const allowed = try numa.allowedCpus(testing.allocator);
+    defer testing.allocator.free(allowed);
+    const placements = try numa.plan(testing.allocator, null, .{ .count = @min(2, allowed.len) });
+    defer testing.allocator.free(placements);
+    const Context = struct {
+        expected: []const numa.Placement,
+        observed: [2]?usize = @splat(null),
 
-    var group: Group = undefined;
-    switch (builtin.os.tag) {
-        .linux => {
-            const linux = std.os.linux;
-            const allowed = try std.posix.sched_getaffinity(0);
-            const count = @min(2, linux.CPU_COUNT(allowed));
-            const Context = struct {
-                observed: [2]linux.cpu_set_t = undefined,
-
-                fn entry(self: *@This(), _: *io.Loop, index: usize) !void {
-                    self.observed[index] = try std.posix.sched_getaffinity(0);
-                }
-            };
-            var context: Context = .{};
-            try group.init(testing.allocator, .{ .count = count, .pin = true }, &context, Context.entry);
-            group.deinit();
-
-            var cpu: usize = 0;
-            for (context.observed[0..count]) |observed| {
-                while (allowed[cpu / @bitSizeOf(usize)] & (@as(usize, 1) << @intCast(cpu % @bitSizeOf(usize))) == 0) cpu += 1;
-                var expected: linux.cpu_set_t = @splat(0);
-                expected[cpu / @bitSizeOf(usize)] = @as(usize, 1) << @intCast(cpu % @bitSizeOf(usize));
-
-                try testing.expectEqual(1, linux.CPU_COUNT(observed));
-                try testing.expectEqualDeep(expected, observed);
-                cpu += 1;
+        fn entry(self: *@This(), _: *io.Loop, index: usize) !void {
+            if (builtin.os.tag == .linux) {
+                const effective = try numa.allowedCpus(std.heap.page_allocator);
+                defer std.heap.page_allocator.free(effective);
+                try testing.expectEqualSlices(usize, &.{self.expected[index].cpu.?}, effective);
+                self.observed[index] = effective[0];
+            } else {
+                const win32 = @import("../event/backends/win32.zig");
+                const mask = @as(usize, 1) << @intCast(self.expected[index].cpu.?);
+                const previous = win32.SetThreadAffinityMask(std.os.windows.GetCurrentThread(), mask);
+                try testing.expectEqual(mask, previous);
+                self.observed[index] = @ctz(previous);
             }
-            if (count == 2) try testing.expect(!std.mem.eql(usize, &context.observed[0], &context.observed[1]));
-
-            try testing.expectError(error.NotEnoughCpus, group.init(testing.allocator, .{
-                .count = @as(usize, linux.CPU_COUNT(allowed)) + 1,
-                .pin = true,
-            }, {}, Noop.entry));
-        },
-        .windows => {
-            try group.init(testing.allocator, .{ .count = 1, .pin = true }, {}, Noop.entry);
-            group.deinit();
-        },
-        else => try testing.expectError(error.Unsupported, group.init(testing.allocator, .{ .pin = true }, {}, Noop.entry)),
+        }
+    };
+    var context: Context = .{ .expected = placements };
+    var group: Group = undefined;
+    try group.init(testing.allocator, .{ .placement = placements }, &context, Context.entry);
+    group.deinit();
+    for (placements, context.observed[0..placements.len], allowed[0..placements.len]) |placement, observed, cpu| {
+        try testing.expectEqual(cpu, placement.cpu.?);
+        try testing.expectEqual(placement.cpu, observed);
     }
+    if (placements.len == 2) try testing.expect(context.observed[0] != context.observed[1]);
+    try testing.expectError(error.NotEnoughCpus, numa.plan(testing.allocator, null, .{ .count = allowed.len + 1 }));
+    const after = try numa.allowedCpus(testing.allocator);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(usize, allowed, after);
 }
 
 test "group names threads and rejects invalid options" {

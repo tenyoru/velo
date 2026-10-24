@@ -51,20 +51,23 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(example_tests).step);
     }
 
-    const benchmark_module = b.createModule(.{
-        .root_source_file = b.path("bench/scalability.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "velo", .module = mod }},
-    });
-    const benchmark = b.addExecutable(.{ .name = "scalability", .root_module = benchmark_module });
-    const install_benchmark = b.addInstallArtifact(benchmark, .{});
-    b.step("bench", "Build and install the scalability benchmark").dependOn(&install_benchmark.step);
-    const run_benchmark = b.addRunArtifact(benchmark);
-    run_benchmark.addPassthruArgs();
-    b.step("run-scalability", "Run the scalability benchmark").dependOn(&run_benchmark.step);
-    const benchmark_tests = b.addTest(.{ .name = "scalability-test", .root_module = benchmark_module });
-    check_step.dependOn(&benchmark.step);
-    check_step.dependOn(&benchmark_tests.step);
-    test_step.dependOn(&b.addRunArtifact(benchmark_tests).step);
+    const bench_step = b.step("bench", "Build and install benchmarks");
+    inline for (.{ "scalability", "numa" }) |name| {
+        const benchmark_module = b.createModule(.{
+            .root_source_file = b.path("bench/" ++ name ++ ".zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "velo", .module = mod }},
+        });
+        const benchmark = b.addExecutable(.{ .name = name, .root_module = benchmark_module });
+        const install_benchmark = b.addInstallArtifact(benchmark, .{});
+        bench_step.dependOn(&install_benchmark.step);
+        const run_benchmark = b.addRunArtifact(benchmark);
+        run_benchmark.addPassthruArgs();
+        b.step("run-" ++ name, "Run the " ++ name ++ " benchmark").dependOn(&run_benchmark.step);
+        const benchmark_tests = b.addTest(.{ .name = name ++ "-test", .root_module = benchmark_module });
+        check_step.dependOn(&benchmark.step);
+        check_step.dependOn(&benchmark_tests.step);
+        test_step.dependOn(&b.addRunArtifact(benchmark_tests).step);
+    }
 }
