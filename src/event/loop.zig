@@ -57,6 +57,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             defer if (ThreadGuard.enabled) loop.executor.thread_guard.leave(entered);
 
             assert(!loop.running);
+            if (std.debug.runtime_safety) checkDrained(loop);
             loop.control.deinit();
             assert(loop.active == 0 and loop.pending.first == null);
             assert(loop.executor.ready.first == null and loop.executor.all_tasks.first == null);
@@ -77,8 +78,28 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             spawn(loop, frame);
             run(loop) catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
-            if (frame.result == null) @panic("loop returned before the blocked frame completed");
+            if (frame.result == null) {
+                if (std.debug.runtime_safety) {
+                    std.debug.print("velo: loop stopped or stalled before the blocked frame completed; live tasks:\n", .{});
+                    loop.executor.dumpTasks();
+                }
+                @panic("loop returned before the blocked frame completed");
+            }
             return frame.getResult();
+        }
+
+        // Reports what is still live before the drain assertions fire.
+        fn checkDrained(loop: *Loop) void {
+            const executor = &loop.executor;
+            if (executor.all_tasks.first == null and executor.ready.first == null and loop.active == 0 and
+                loop.pending.first == null and !loop.control.hasWork()) return;
+
+            std.debug.print(
+                "velo: loop deinit before draining (active operations: {d}, external work: {}); live tasks:\n",
+                .{ loop.active, loop.control.hasWork() },
+            );
+            executor.dumpTasks();
+            @panic("velo: loop deinit with live work; cancel or shut down, then run until drained");
         }
 
         pub fn post(loop: *Loop, command: *Control.Post) void {

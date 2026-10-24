@@ -53,7 +53,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/coroutines/test.zig`: scheduling and composition tests; primitive-specific
   tests stay beside their implementations
 - `src/coroutines/Executor.zig`: single-threaded intrusive run queue, `Task` (the
-  waker), task registry and cancellation
+  waker), task registry and cancellation; safe-build task names, `writeTasks`/`dumpTasks`
 - `src/coroutines/Event.zig`, `Semaphore.zig`, `Channel.zig`: single-threaded FIFO
   primitives
 
@@ -62,7 +62,8 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Operation.zig`: shared operation state, typed coroutine wrappers,
   cancellation, and completion accounting
 - `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`,
-  `spawn`/`block` frame helpers, and control forwarders; comptime check of backend fields and the
+  `spawn`/`block` frame helpers, control forwarders, and safe-build live-task reports
+  on undrained deinit or stalled `block`; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
 - `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration

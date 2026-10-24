@@ -56,6 +56,7 @@ pub fn Frame(comptime C: type) type {
         task: Task = .{
             .poll_fn = pollTask,
             .cancel_fn = if (@hasDecl(C, "cancel")) cancelTask else null,
+            .name = if (Executor.named) @typeName(C) else {},
         },
         coroutine: C,
         result: ?T = null,

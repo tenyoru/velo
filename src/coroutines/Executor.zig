@@ -8,6 +8,9 @@ const ThreadGuard = @import("../ThreadGuard.zig");
 
 const Executor = @This();
 
+/// Safe builds keep coroutine type names on tasks for diagnostics; others store nothing.
+pub const named = std.debug.runtime_safety;
+
 thread_guard: ThreadGuard = .{},
 ready: std.DoublyLinkedList = .{},
 all_tasks: std.DoublyLinkedList = .{},
@@ -25,6 +28,12 @@ pub const Task = struct {
     cancel_fn: ?*const fn (*Task) void = null,
     /// Borrowed waits/work, including completed results not yet consumed.
     outstanding_io: usize = 0,
+    /// Set by `Frame` to its coroutine type name.
+    name: if (named) []const u8 else void = if (named) "task" else {},
+
+    pub fn getName(task: *const Task) []const u8 {
+        return if (named) task.name else "task";
+    }
 
     /// Keep driving after cancel; callbacks must not run the executor or free registered frames.
     pub fn cancel(task: *Task) void {
@@ -50,7 +59,11 @@ pub const Task = struct {
                 task.executor.?.ready.append(&task.node);
             },
             .scheduled => {},
-            .done => unreachable, // stale waker: the frame finished and may be reused
+            // Stale waker: the frame finished and may be reused.
+            .done => if (named)
+                std.debug.panic("velo: wake of finished task {s}; a waker outlived its wait", .{task.name})
+            else
+                unreachable,
         }
     }
 };
@@ -100,7 +113,12 @@ pub fn runOne(ex: *Executor) bool {
     task.state = .idle;
 
     if (task.poll_fn(task)) {
-        assert(task.outstanding_io == 0);
+        if (task.outstanding_io != 0) {
+            if (named) std.debug.panic(
+                "velo: task {s} finished with {d} unconsumed waits; poll every child to ready first",
+                .{ task.name, task.outstanding_io },
+            ) else unreachable;
+        }
 
         // A task can wake itself and still finish, e.g. by dropping a yielded child.
         if (task.state == .scheduled) ex.ready.remove(&task.node);
@@ -115,6 +133,68 @@ pub fn runOne(ex: *Executor) bool {
     }
 
     return true;
+}
+
+/// Writes one line per registered task: name, state, outstanding waits and cancellation.
+pub fn writeTasks(ex: *const Executor, w: *std.Io.Writer) std.Io.Writer.Error!usize {
+    var count: usize = 0;
+    var node = ex.all_tasks.first;
+
+    while (node) |current| : (node = current.next) {
+        const task: *const Task = @alignCast(@fieldParentPtr("all_node", current));
+
+        try w.print("  {s}: {s}, {d} outstanding{s}\n", .{
+            task.getName(),
+            @tagName(task.state),
+            task.outstanding_io,
+            if (task.cancel_requested) ", cancel requested" else "",
+        });
+        count += 1;
+    }
+
+    return count;
+}
+
+/// Prints `writeTasks` to stderr, e.g. while diagnosing a stall or an undrained loop.
+pub fn dumpTasks(ex: *const Executor) void {
+    var buffer: [256]u8 = undefined;
+    const stderr = std.debug.lockStderr(&buffer);
+    defer std.debug.unlockStderr();
+
+    const w = &stderr.file_writer.interface;
+    const count = ex.writeTasks(w) catch return;
+    if (count == 0) w.writeAll("  (no registered tasks)\n") catch return;
+    w.flush() catch return;
+}
+
+test "safe builds name frames and report registered tasks" {
+    var event: coroutines.Event = .{};
+    defer event.deinit();
+
+    var ex: Executor = .{};
+    var waiting: coroutines.Frame(coroutines.Event.Wait) = .init(event.wait());
+    const name = if (named) @typeName(coroutines.Event.Wait) else "task";
+
+    try std.testing.expectEqualStrings(name, waiting.task.getName());
+
+    ex.spawn(&waiting.task);
+    ex.run();
+    waiting.cancel();
+
+    var buffer: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buffer);
+
+    try std.testing.expectEqual(1, try ex.writeTasks(&w));
+    try std.testing.expectEqualStrings(
+        "  " ++ name ++ ": scheduled, 1 outstanding, cancel requested\n",
+        w.buffered(),
+    );
+
+    ex.run();
+    w = .fixed(&buffer);
+
+    try std.testing.expectEqual(0, try ex.writeTasks(&w));
+    try std.testing.expectError(error.Canceled, waiting.getResult());
 }
 
 test "wakes are deduplicated and dropped on completion" {

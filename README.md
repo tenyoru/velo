@@ -154,6 +154,9 @@ Concurrency composes the same way:
   succeed, so clean up whatever the result owns.
 - A loop belongs to one thread. Other threads may call only `post`, `retain`,
   `release`, `stop`, and `shutdown`.
+- Debug and ReleaseSafe builds name tasks after their coroutine type. Undrained
+  `loop.deinit()`, a stalled `block`, stale wakes and tasks finishing with unconsumed
+  children panic with the live tasks listed; `loop.executor.dumpTasks()` prints them on demand.
 - The full contracts are doc comments; start with `src/coroutines/root.zig`
   and `src/event/root.zig`.
 
