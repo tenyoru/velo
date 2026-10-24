@@ -24,16 +24,9 @@ pub fn main() !void {
     var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
-    var counters = [_]co.Frame(Counter){
-        .{
-            .coroutine = .{ .id = 1 },
-        },
-        .{
-            .coroutine = .{ .id = 2 },
-        },
-    };
+    var counters = [_]co.Frame(Counter){ .init(.{ .id = 1 }), .init(.{ .id = 2 }) };
 
-    for (&counters) |*counter| loop.executor.spawn(&counter.task);
+    for (&counters) |*counter| loop.spawn(counter);
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
     for (&counters) |*counter| {

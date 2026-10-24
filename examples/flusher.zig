@@ -242,7 +242,7 @@ fn exercise(loop: *io.Loop, allocator: std.mem.Allocator, std_io: std.Io) ![2]Su
     for (&mailboxes, &sinks, &frames) |*mailbox, *sink, *frame| {
         mailbox.init(loop, std_io);
         frame.* = .{ .coroutine = .{ .mailbox = mailbox, .pool = &pool, .sink = sink } };
-        loop.executor.spawn(&frame.task);
+        loop.spawn(frame);
     }
     defer {
         for (&frames) |*frame| frame.cancel();
@@ -336,7 +336,7 @@ const Harness = struct {
                 .pool = &self.pool,
                 .sink = sink,
             } } };
-            self.loop.executor.spawn(&frame.task);
+            self.loop.spawn(frame);
         }
     }
 

@@ -64,6 +64,23 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             hooks.close(loop);
         }
 
+        /// Schedules a `*Frame(C)`; pin it until its result is consumed.
+        pub fn spawn(loop: *Loop, frame: anytype) void {
+            loop.executor.spawn(&frame.task);
+        }
+
+        /// Spawns `frame`, runs until the loop drains (including other work), and returns
+        /// its result. Panics on run errors, since unwinding would free borrowed storage,
+        /// and if run returns first (stop, or a task parked without a waker).
+        /// Use `spawn` and `run` to stop/resume or retry run errors.
+        pub fn block(loop: *Loop, frame: anytype) std.meta.Child(@TypeOf(frame)).Result {
+            spawn(loop, frame);
+            run(loop) catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
+
+            if (frame.result == null) @panic("loop returned before the blocked frame completed");
+            return frame.getResult();
+        }
+
         pub fn post(loop: *Loop, command: *Control.Post) void {
             loop.control.post(command);
         }

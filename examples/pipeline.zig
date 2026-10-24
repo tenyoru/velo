@@ -25,13 +25,11 @@ const Producer = struct {
         sw: switch (self.state) {
             .transfer => {
                 // A full channel parks the send; a receiver wakes its task when space opens.
-                switch (self.send.poll(task)) {
-                    .pending => return .pending,
-                    .ready => |result| result catch |err| {
-                        self.send.channel.close();
-                        return .{ .ready = err };
-                    },
-                }
+                const sent = self.send.poll(task).value() orelse return .pending;
+                sent catch |err| {
+                    self.send.channel.close();
+                    return .{ .ready = err };
+                };
 
                 self.next += 1;
 
@@ -46,10 +44,7 @@ const Producer = struct {
             },
             .yield => {
                 // Yield even after immediate sends, giving other work a turn.
-                switch (self.yield.poll(task)) {
-                    .pending => return .pending,
-                    .ready => {},
-                }
+                _ = self.yield.poll(task).value() orelse return .pending;
 
                 if (self.canceled or task.cancel_requested) {
                     self.send.channel.close();
@@ -81,21 +76,16 @@ const Consumer = struct {
         sw: switch (self.state) {
             .transfer => {
                 // Closed means all buffered values were drained, so the accumulated sum is final.
-                self.sum += switch (self.recv.poll(task)) {
-                    .pending => return .pending,
-                    .ready => |result| result catch |err| return .{
-                        .ready = if (err == error.Closed) self.sum else err,
-                    },
+                const received = self.recv.poll(task).value() orelse return .pending;
+                self.sum += received catch |err| return .{
+                    .ready = if (err == error.Closed) self.sum else err,
                 };
 
                 self.state = .yield;
                 continue :sw .yield;
             },
             .yield => {
-                switch (self.yield.poll(task)) {
-                    .pending => return .pending,
-                    .ready => {},
-                }
+                _ = self.yield.poll(task).value() orelse return .pending;
 
                 if (self.canceled or task.cancel_requested) return .{ .ready = error.Canceled };
 
@@ -117,17 +107,12 @@ pub fn main() !void {
     defer channel.deinit();
 
     // Join waits for both children; neither may outlive the frame or channel storage.
-    var frame: co.Frame(co.Join(Producer, Consumer)) = .{
-        .coroutine = .{
-            .a = .{ .send = channel.send(1) },
-            .b = .{ .recv = channel.recv() },
-        },
-    };
+    var frame: co.Frame(co.Join(Producer, Consumer)) = .init(.{
+        .a = .{ .send = channel.send(1) },
+        .b = .{ .recv = channel.recv() },
+    });
 
-    loop.executor.spawn(&frame.task);
-    loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
-
-    const results = frame.getResult();
+    const results = loop.block(&frame);
     try results.a;
     const sum = try results.b;
 
@@ -153,7 +138,7 @@ test "pipeline joins both results and drains cancellation" {
             },
         };
 
-        loop.executor.spawn(&frame.task);
+        loop.spawn(&frame);
         try std.testing.expect(loop.executor.runOne());
 
         if (canceled) {

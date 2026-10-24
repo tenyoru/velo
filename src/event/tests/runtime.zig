@@ -797,3 +797,24 @@ test "runtime stream helpers loop preserve partial EOF and allow reverse half-cl
         try drained(&loop);
     }
 }
+
+test "runtime block drains other spawned work before returning the frame result" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        var short: co.Frame(io.Timeout) = .init(io.Timeout.init(&loop, .{
+            .duration = .{ .sec = 0, .nsec = 1_000_000 },
+        }));
+        var long: co.Frame(io.Timeout) = .init(io.Timeout.init(&loop, .{
+            .duration = .{ .sec = 0, .nsec = 5_000_000 },
+        }));
+
+        loop.spawn(&long);
+        try loop.block(&short);
+
+        try long.getResult();
+        try testing.expectEqual(0, long.task.outstanding_io);
+        try drained(&loop);
+    }
+}

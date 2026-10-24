@@ -147,6 +147,40 @@ test "await a child woken from outside" {
     try std.testing.expectEqual(7, sum.getResult());
 }
 
+test "Poll.value keeps ready optionals distinct from pending" {
+    const pending: Poll(u32) = .pending;
+    const ready: Poll(u32) = .{ .ready = 7 };
+    const empty: Poll(?u32) = .{ .ready = null };
+
+    try std.testing.expectEqual(null, pending.value());
+    try std.testing.expectEqual(7, ready.value().?);
+    try std.testing.expectEqual(null, empty.value().?);
+}
+
+test "Frame.init runs a coroutine that unwraps its child with value" {
+    const Twice = struct {
+        yield: Yield = .{},
+        polls: u32 = 0,
+
+        pub fn poll(self: *@This(), task: *Task) Poll(u32) {
+            self.polls += 1;
+            _ = self.yield.poll(task).value() orelse return .pending;
+
+            return .{ .ready = self.polls };
+        }
+    };
+
+    comptime assert(Frame(Twice).Result == u32);
+
+    var ex: Executor = .{};
+    var frame: Frame(Twice) = .init(.{});
+
+    ex.spawn(&frame.task);
+    ex.run();
+
+    try std.testing.expectEqual(2, frame.getResult());
+}
+
 fn GroupProbe(comptime T: type) type {
     return struct {
         value: T,

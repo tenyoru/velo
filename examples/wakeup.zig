@@ -71,7 +71,7 @@ fn exercise(loop: *io.Loop, std_io: std.Io) !void {
         return err;
     };
 
-    loop.executor.spawn(&waiter.task);
+    loop.spawn(&waiter);
 
     // Run errors cannot unwind storage still borrowed by the loop or producer.
     loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});

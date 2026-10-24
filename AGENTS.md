@@ -55,8 +55,8 @@ stackful fibers), so coroutines here are explicit state machines.
   selection, and lifetime contract
 - `src/event/Operation.zig`: shared operation state, typed coroutine wrappers,
   cancellation, and completion accounting
-- `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`, and
-  control forwarders; comptime check of backend fields and the
+- `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`,
+  `spawn`/`block` frame helpers, and control forwarders; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
 - `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration

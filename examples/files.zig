@@ -80,15 +80,10 @@ fn writeAndVerify(allocator: std.mem.Allocator, std_io: std.Io, path: []const u8
     return payload.len;
 }
 
-fn run(loop: *io.Loop, work: anytype) @typeInfo(@TypeOf(co.Frame(@TypeOf(work)).getResult)).@"fn".return_type.? {
+fn run(loop: *io.Loop, work: anytype) co.Frame(@TypeOf(work)).Result {
     // This example waits for each step; the local frame stays pinned until completion.
-    var frame: co.Frame(@TypeOf(work)) = .{ .coroutine = work };
+    var frame: co.Frame(@TypeOf(work)) = .init(work);
+    defer frame.coroutine.deinit();
 
-    loop.executor.spawn(&frame.task);
-
-    // A fatal run error cannot unwind buffers still borrowed by I/O.
-    loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
-
-    frame.coroutine.deinit();
-    return frame.getResult();
+    return loop.block(&frame);
 }

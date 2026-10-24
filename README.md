@@ -66,20 +66,19 @@ pub fn main() !void {
     var loop = try velo.event.Loop.init(.{});
     defer loop.deinit();
 
-    var timer: velo.coroutines.Frame(velo.event.Timeout) = .{
-        .coroutine = velo.event.Timeout.init(&loop, .{
-            .duration = .{ .sec = 0, .nsec = 1_000_000 },
-        }),
-    };
+    var timer: velo.coroutines.Frame(velo.event.Timeout) = .init(velo.event.Timeout.init(&loop, .{
+        .duration = .{ .sec = 0, .nsec = 1_000_000 },
+    }));
 
-    loop.executor.spawn(&timer.task);
-
-    // A loop error cannot safely unwind storage the kernel still references.
-    loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
-
-    try timer.getResult();
+    // Spawns, runs until the loop drains, and returns the result. Loop errors panic:
+    // storage the kernel still references cannot be unwound safely.
+    try loop.block(&timer);
 }
 ```
+
+Use `loop.spawn(&frame)` for additional frames, and `loop.run()` directly to stop/resume
+or retry run errors. Inside a coroutine, `child.poll(task).value() orelse return .pending`
+forwards a child's pending state.
 
 ## Rules
 

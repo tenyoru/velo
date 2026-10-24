@@ -158,6 +158,8 @@ const shared = @import("../loop.zig").Shared(Loop, .{
 });
 pub const run = shared.run;
 pub const deinit = shared.deinit;
+pub const spawn = shared.spawn;
+pub const block = shared.block;
 pub const post = shared.post;
 pub const retain = shared.retain;
 pub const release = shared.release;

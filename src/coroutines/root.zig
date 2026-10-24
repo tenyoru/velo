@@ -20,7 +20,18 @@ pub const Semaphore = @import("Semaphore.zig");
 pub const Channel = @import("Channel.zig").Channel;
 
 pub fn Poll(comptime T: type) type {
-    return union(enum) { pending, ready: T };
+    return union(enum) {
+        pending,
+        ready: T,
+
+        /// Ready value or null: `const v = child.poll(task).value() orelse return .pending;`.
+        pub fn value(self: @This()) ?T {
+            return switch (self) {
+                .pending => null,
+                .ready => |v| v,
+            };
+        }
+    };
 }
 
 fn ResultType(comptime C: type) type {
@@ -45,6 +56,12 @@ pub fn Frame(comptime C: type) type {
         result: ?T = null,
 
         const Self = @This();
+        pub const Result = T;
+
+        /// Move freely until spawned; pin afterwards.
+        pub fn init(coroutine: C) Self {
+            return .{ .coroutine = coroutine };
+        }
 
         pub fn cancel(self: *Self) void {
             self.task.cancel();

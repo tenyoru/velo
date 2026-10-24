@@ -372,7 +372,7 @@ const Coordinator = struct {
         }
         if (self.config.fail_after == index) return error.ThreadStartFailed;
         if (!self.config.numa and self.config.scenario == .closed and index == 0) loop.shutdown();
-        loop.executor.spawn(&shard.frame.task);
+        loop.spawn(&shard.frame);
     }
 
     fn cancelSource(post: *io.Control.Post) void {
@@ -672,7 +672,7 @@ test "shards sender drains queued and running warmup cancellation before joining
                 .release = &release,
             }) };
             if (queued) {
-                loop.executor.spawn(&blocker.task);
+                loop.spawn(&blocker);
                 loop.executor.run();
                 started.waitUncancelable(std.testing.io);
             }
@@ -682,7 +682,7 @@ test "shards sender drains queued and running warmup cancellation before joining
                 .release = if (queued) null else &release,
             });
             shard.frame.coroutine.work = work;
-            loop.executor.spawn(&shard.frame.task);
+            loop.spawn(&shard.frame);
             loop.executor.run();
             started.waitUncancelable(std.testing.io);
             defer {

@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
             },
         };
 
-        loop.executor.spawn(&frame.task);
+        loop.spawn(frame);
     }
     defer for (&handlers) |*frame| frame.coroutine.cleanup();
 
@@ -174,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
         },
     };
 
-    loop.executor.spawn(&stopper.task);
+    loop.spawn(&stopper);
 
     std.debug.print(
         "Listening on 127.0.0.1:{d}; press Enter or send stdin EOF to stop.\n",
@@ -213,7 +213,7 @@ test "handler cancellation consumes queued children before closing sockets" {
             });
         }
 
-        loop.executor.spawn(&frame.task);
+        loop.spawn(&frame);
         try std.testing.expect(loop.executor.runOne());
 
         try std.testing.expectEqual(1, frame.task.outstanding_io);
