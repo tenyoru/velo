@@ -3,95 +3,74 @@ const velo = @import("velo");
 const co = velo.coroutines;
 const io = velo.event;
 
-const Handler = struct {
+// One connection slot: accept, echo until the peer leaves, then accept again.
+const Connection = struct {
     loop: *io.Loop,
     listener: io.Socket,
+    /// Set before spawning to start echoing on an already accepted socket.
     fd: ?io.Socket = null,
     buffer: [4096]u8 = undefined,
-    accept: io.Accept,
-    recv: io.Recv = undefined,
-    send: io.SendAll = undefined,
-    state: enum { accept, recv, send } = .accept,
 
-    pub fn cancel(self: *@This()) void {
-        switch (self.state) {
-            .accept => self.accept.cancel(),
-            .recv => self.recv.cancel(),
-            .send => self.send.cancel(),
-        }
+    pub const Result = anyerror!void;
+    pub const State = union(enum) { accept: io.Accept, recv: io.Recv, send: io.SendAll };
+    const Next = co.Next(@This());
+
+    pub fn start(self: *@This()) Next {
+        if (self.fd != null) return self.receive();
+
+        return .{ .go = .{ .accept = io.Accept.init(self.loop, .{ .fd = self.listener }) } };
+    }
+
+    pub fn accept(self: *@This(), result: io.Error!io.Socket) Next {
+        // Cancellation and shutdown end the slot; reaching here means no socket to close.
+        self.fd = result catch |err| return .{
+            .done = if (err == error.OperationCanceled) {} else err,
+        };
+
+        return self.receive();
+    }
+
+    pub fn recv(self: *@This(), result: io.Error!usize) Next {
+        const n = result catch |err| return self.disconnected(err);
+        if (n == 0) return self.disconnected({});
+
+        return .{ .go = .{ .send = io.SendAll.init(self.loop, .{
+            .fd = self.fd.?,
+            .buffer = self.buffer[0..n],
+        }) } };
+    }
+
+    pub fn send(self: *@This(), result: co.ResultOf(io.SendAll)) Next {
+        result catch |err| return self.disconnected(err);
+
+        return self.receive();
+    }
+
+    fn receive(self: *@This()) Next {
+        return .{ .go = .{ .recv = io.Recv.init(self.loop, .{
+            .fd = self.fd.?,
+            .buffer = &self.buffer,
+        }) } };
+    }
+
+    fn disconnected(self: *@This(), result: anyerror!void) Next {
+        // The finished child no longer borrows this socket.
+        self.cleanup();
+
+        result catch |err| if (err != error.OperationCanceled)
+            std.debug.print("connection: {s}\n", .{@errorName(err)});
+
+        // After cancellation or shutdown, the next accept fails fast and ends the slot.
+        return self.start();
     }
 
     fn cleanup(self: *@This()) void {
         if (self.fd) |fd| close(fd);
         self.fd = null;
     }
-
-    fn disconnected(self: *@This(), task: *co.Task, result: anyerror!void) co.Poll(anyerror!void) {
-        // The active child has returned ready, so nothing still borrows this socket.
-        self.cleanup();
-
-        result catch |err| {
-            if (err == error.OperationCanceled) return .{ .ready = {} };
-
-            std.debug.print("connection: {s}\n", .{@errorName(err)});
-        };
-
-        if (task.cancel_requested or self.loop.control.isShuttingDown()) return .{ .ready = {} };
-
-        self.accept = io.Accept.init(self.loop, .{ .fd = self.listener });
-        self.state = .accept;
-        task.wake();
-        return .pending;
-    }
-
-    pub fn poll(self: *@This(), task: *co.Task) co.Poll(anyerror!void) {
-        sw: switch (self.state) {
-            .accept => {
-                self.fd = switch (self.accept.poll(task)) {
-                    .pending => return .pending,
-                    .ready => |result| result catch |err| return .{
-                        .ready = if (err == error.OperationCanceled) {} else err,
-                    },
-                };
-
-                self.recv = io.Recv.init(self.loop, .{
-                    .fd = self.fd.?,
-                    .buffer = &self.buffer,
-                });
-                self.state = .recv;
-                continue :sw .recv;
-            },
-            .recv => {
-                const n = switch (self.recv.poll(task)) {
-                    .pending => return .pending,
-                    .ready => |result| result catch |err| return self.disconnected(task, err),
-                };
-
-                if (n == 0) return self.disconnected(task, {});
-
-                self.send = io.SendAll.init(self.loop, .{
-                    .fd = self.fd.?,
-                    .buffer = self.buffer[0..n],
-                });
-                self.state = .send;
-                continue :sw .send;
-            },
-            .send => {
-                switch (self.send.poll(task)) {
-                    .pending => return .pending,
-                    .ready => |result| result catch |err| return self.disconnected(task, err),
-                }
-
-                self.recv = io.Recv.init(self.loop, .{
-                    .fd = self.fd.?,
-                    .buffer = &self.buffer,
-                });
-                self.state = .recv;
-                continue :sw .recv;
-            },
-        }
-    }
 };
+
+const Handler = co.Machine(Connection);
 
 const Input = struct {
     pub fn run(_: *@This(), std_io: std.Io) !void {
@@ -116,10 +95,7 @@ const Stopper = struct {
     input: velo.workers.Pool.Work(Input),
 
     pub fn poll(self: *@This(), task: *co.Task) co.Poll(anyerror!void) {
-        const result = switch (self.input.poll(task)) {
-            .pending => return .pending,
-            .ready => |result| result,
-        };
+        const result = self.input.poll(task).value() orelse return .pending;
 
         // Shutdown cannot interrupt a running blocking read; finish it before joining.
         self.loop.shutdown();
@@ -155,36 +131,20 @@ pub fn main(init: std.process.Init) !void {
     var handlers: [4]co.Frame(Handler) = undefined;
 
     for (&handlers) |*frame| {
-        frame.* = .{
-            .coroutine = .{
-                .loop = &loop,
-                .listener = listener,
-                .accept = io.Accept.init(&loop, .{ .fd = listener }),
-            },
-        };
-
+        frame.* = .init(.init(.{ .loop = &loop, .listener = listener }));
         loop.spawn(frame);
     }
-    defer for (&handlers) |*frame| frame.coroutine.cleanup();
+    defer for (&handlers) |*frame| frame.coroutine.ctx.cleanup();
 
-    var stopper: co.Frame(Stopper) = .{
-        .coroutine = .{
-            .loop = &loop,
-            .input = .init(&pool, .{}),
-        },
-    };
-
-    loop.spawn(&stopper);
+    var stopper: co.Frame(Stopper) = .init(.{ .loop = &loop, .input = .init(&pool, .{}) });
 
     std.debug.print(
         "Listening on 127.0.0.1:{d}; press Enter or send stdin EOF to stop.\n",
         .{std.mem.bigToNative(u16, address.port)},
     );
 
-    // A fatal run error leaves live frames borrowed by the kernel; never unwind them.
-    loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
-
-    try stopper.getResult();
+    // Runs until Enter or EOF shuts down the loop and every handler drains.
+    try loop.block(&stopper);
     for (&handlers) |*frame| try frame.getResult();
 }
 
@@ -196,22 +156,11 @@ test "handler cancellation consumes queued children before closing sockets" {
         const fd = try io.tcpSocket(.ipv4);
         defer if (!receiving) close(fd);
 
-        var frame: co.Frame(Handler) = .{
-            .coroutine = .{
-                .loop = &loop,
-                .listener = fd,
-                .accept = io.Accept.init(&loop, .{ .fd = fd }),
-            },
-        };
-
-        if (receiving) {
-            frame.coroutine.fd = fd;
-            frame.coroutine.state = .recv;
-            frame.coroutine.recv = io.Recv.init(&loop, .{
-                .fd = fd,
-                .buffer = &frame.coroutine.buffer,
-            });
-        }
+        var frame: co.Frame(Handler) = .init(.init(.{
+            .loop = &loop,
+            .listener = fd,
+            .fd = if (receiving) fd else null,
+        }));
 
         loop.spawn(&frame);
         try std.testing.expect(loop.executor.runOne());
@@ -222,7 +171,7 @@ test "handler cancellation consumes queued children before closing sockets" {
         loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
 
         try frame.getResult();
-        try std.testing.expectEqual(null, frame.coroutine.fd);
+        try std.testing.expectEqual(null, frame.coroutine.ctx.fd);
         try std.testing.expectEqual(0, frame.task.outstanding_io);
     }
 }

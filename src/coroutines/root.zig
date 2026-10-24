@@ -9,6 +9,7 @@
 //! Pin primitives, waiters and channel storage until ready is consumed.
 //! Granted permits/values win cancellation; clean them up.
 //! Primitives are single-threaded; cross-thread producers use `loop.control.post`.
+//! For children run in sequence, `Machine` (machine.zig) derives `poll` and `cancel`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -18,6 +19,8 @@ pub const Task = Executor.Task;
 pub const Event = @import("Event.zig");
 pub const Semaphore = @import("Semaphore.zig");
 pub const Channel = @import("Channel.zig").Channel;
+pub const Machine = @import("machine.zig").Machine;
+pub const Next = @import("machine.zig").Next;
 
 pub fn Poll(comptime T: type) type {
     return union(enum) {
@@ -34,7 +37,8 @@ pub fn Poll(comptime T: type) type {
     };
 }
 
-fn ResultType(comptime C: type) type {
+/// Ready type of a coroutine: `T` in `poll(*C, *Task) Poll(T)`.
+pub fn ResultOf(comptime C: type) type {
     const P = @typeInfo(@TypeOf(C.poll)).@"fn".return_type.?;
     const T = @FieldType(P, "ready");
 
@@ -45,7 +49,7 @@ fn ResultType(comptime C: type) type {
 
 /// Pin from `spawn` until `result` is set: executor and wakers borrow this frame.
 pub fn Frame(comptime C: type) type {
-    const T = ResultType(C);
+    const T = ResultOf(C);
 
     return struct {
         task: Task = .{
@@ -97,8 +101,8 @@ pub fn Frame(comptime C: type) type {
 /// Children require idempotent `pub fn cancel(*Self) void`, valid before polling.
 /// Cancellation requests unfinished children; keep polling to ready.
 pub fn Join(comptime A: type, comptime B: type) type {
-    const AT = ResultType(A);
-    const BT = ResultType(B);
+    const AT = ResultOf(A);
+    const BT = ResultOf(B);
 
     return struct {
         a: A,
@@ -146,8 +150,8 @@ pub fn Join(comptime A: type, comptime B: type) type {
 /// Uses `Join`'s pinning/cancellation contract; cancel and drain the unfinished loser.
 /// Returns both results unchanged; caller must clean up successful losing resources.
 pub fn Race(comptime A: type, comptime B: type) type {
-    const AT = ResultType(A);
-    const BT = ResultType(B);
+    const AT = ResultOf(A);
+    const BT = ResultOf(B);
 
     return struct {
         a: A,
@@ -226,4 +230,5 @@ pub const Yield = struct {
 test {
     std.testing.refAllDecls(@This());
     _ = @import("test.zig");
+    _ = @import("machine.zig");
 }

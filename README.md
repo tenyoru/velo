@@ -80,6 +80,46 @@ Use `loop.spawn(&frame)` for additional frames, and `loop.run()` directly to sto
 or retry run errors. Inside a coroutine, `child.poll(task).value() orelse return .pending`
 forwards a child's pending state.
 
+Most coroutines run child operations in sequence. `Machine` runs one child at a time
+and calls the handler named after its state with that child's result:
+
+```zig
+const co = velo.coroutines;
+const io = velo.event;
+
+const Echo = struct {
+    loop: *io.Loop,
+    fd: io.Socket,
+    buffer: [4096]u8 = undefined,
+
+    pub const Result = anyerror!void;
+    pub const State = union(enum) { recv: io.Recv, send: io.SendAll };
+
+    // Runs on the first poll, once pinned, so children may borrow `buffer`.
+    pub fn start(self: *Echo) co.Next(Echo) {
+        return .{ .go = .{ .recv = io.Recv.init(self.loop, .{ .fd = self.fd, .buffer = &self.buffer }) } };
+    }
+
+    pub fn recv(self: *Echo, result: io.Error!usize) co.Next(Echo) {
+        const n = result catch |err| return .{ .done = err };
+        if (n == 0) return .{ .done = {} };
+
+        return .{ .go = .{ .send = io.SendAll.init(self.loop, .{ .fd = self.fd, .buffer = self.buffer[0..n] }) } };
+    }
+
+    pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) co.Next(Echo) {
+        result catch |err| return .{ .done = err };
+        return self.start();
+    }
+};
+
+var frame: co.Frame(co.Machine(Echo)) = .init(.init(.{ .loop = &loop, .fd = fd }));
+```
+
+Cancellation reaches the active child and every later child; handlers still choose the
+result. A missing or mistyped handler fails to compile with its expected signature.
+Write `poll` by hand for fan-out or custom wake sources.
+
 ## Rules
 
 - Pin the loop, frames, buffers, and addresses until the result is consumed,

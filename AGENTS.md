@@ -41,9 +41,12 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/state.zig`: internal lifecycle enums for waiters, channels, tasks, I/O, and jobs
 - `src/ThreadGuard.zig`: test-only active-executor ownership checks; zero-sized
   in normal executables and in unsafe or single-threaded test builds
-- `src/coroutines/root.zig`: `velo.coroutines`; `Poll`, `Frame`, `Yield`, `Join`,
-  `Race`; its doc comment is the coroutine contract, read it before writing a
+- `src/coroutines/root.zig`: `velo.coroutines`; `Poll`, `ResultOf`, `Frame`, `Yield`,
+  `Join`, `Race`; its doc comment is the coroutine contract, read it before writing a
   coroutine
+- `src/coroutines/machine.zig`: `Machine(Ctx)`/`Next`: one active child per state,
+  handlers named after states, `start` after pinning, cancellation forwarded to later
+  children, comptime handler-signature diagnostics
 - `src/coroutines/test.zig`: scheduling and composition tests; primitive-specific
   tests stay beside their implementations
 - `src/coroutines/Executor.zig`: single-threaded intrusive run queue, `Task` (the
