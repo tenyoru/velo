@@ -62,6 +62,7 @@ pub const NativeAddress = net.NativeAddress;
 pub const Listener = net.Listener;
 pub const Stream = net.Stream;
 pub const Dial = net.Dial;
+pub const Server = @import("server.zig").Server;
 
 pub const Socket = if (builtin.os.tag == .windows) usize else std.c.fd_t;
 pub const SockAddr = switch (builtin.os.tag) {
@@ -144,4 +145,5 @@ test {
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");
     _ = @import("tests/net.zig");
+    _ = @import("tests/server.zig");
 }

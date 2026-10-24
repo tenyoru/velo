@@ -3,68 +3,42 @@ const velo = @import("velo");
 const co = velo.coroutines;
 const io = velo.event;
 
-// One connection slot: accept, echo until the peer leaves, then accept again.
-const Connection = struct {
-    listener: *const io.Listener,
-    /// Set before spawning to start echoing on an already accepted stream.
-    stream: ?io.Stream = null,
+// One connection: echo until the peer closes. The server accepts, owns and closes the stream.
+const Echo = struct {
+    stream: io.Stream,
     buffer: [4096]u8 = undefined,
 
     pub const Result = anyerror!void;
-    pub const State = union(enum) { accept: io.Accept, recv: io.Recv, send: io.SendAll };
+    pub const State = union(enum) { recv: io.Recv, send: io.SendAll };
     const Next = co.Next(@This());
 
-    pub fn start(self: *@This()) Next {
-        if (self.stream != null) return self.receive();
-
-        return .{ .go = .{ .accept = self.listener.accept(.{}) } };
+    pub fn start(self: *Echo) Next {
+        return .{ .go = .{ .recv = self.stream.recv(&self.buffer) } };
     }
 
-    pub fn accept(self: *@This(), result: io.Error!io.Socket) Next {
-        // Cancellation and shutdown end the slot; reaching here means no socket to close.
-        const fd = result catch |err| return .{
-            .done = if (err == error.OperationCanceled) {} else err,
-        };
+    pub fn recv(self: *Echo, result: io.Error!usize) Next {
+        const n = result catch |err| return finish(err);
+        if (n == 0) return .{ .done = {} };
 
-        self.stream = .init(self.listener.loop, fd);
-        return self.receive();
+        return .{ .go = .{ .send = self.stream.sendAll(self.buffer[0..n]) } };
     }
 
-    pub fn recv(self: *@This(), result: io.Error!usize) Next {
-        const n = result catch |err| return self.disconnected(err);
-        if (n == 0) return self.disconnected({});
-
-        return .{ .go = .{ .send = self.stream.?.sendAll(self.buffer[0..n]) } };
-    }
-
-    pub fn send(self: *@This(), result: co.ResultOf(io.SendAll)) Next {
-        result catch |err| return self.disconnected(err);
-
-        return self.receive();
-    }
-
-    fn receive(self: *@This()) Next {
-        return .{ .go = .{ .recv = self.stream.?.recv(&self.buffer) } };
-    }
-
-    fn disconnected(self: *@This(), result: anyerror!void) Next {
-        // The finished child no longer borrows this stream.
-        self.cleanup();
-
-        result catch |err| if (err != error.OperationCanceled)
-            std.debug.print("connection: {s}\n", .{@errorName(err)});
-
-        // After cancellation or shutdown, the next accept fails fast and ends the slot.
+    pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) Next {
+        result catch |err| return finish(err);
         return self.start();
     }
 
-    fn cleanup(self: *@This()) void {
-        if (self.stream) |stream| stream.close();
-        self.stream = null;
+    // Shutdown cancels live connections; that is a normal end, not a failure.
+    fn finish(err: anyerror) Next {
+        return .{ .done = if (err == error.OperationCanceled) {} else err };
     }
 };
 
-const Handler = co.Machine(Connection);
+fn connect(_: void, stream: io.Stream) co.Machine(Echo) {
+    return .init(.{ .stream = stream });
+}
+
+const Server = io.Server(connect);
 
 const Input = struct {
     pub fn run(_: *@This(), std_io: std.Io) !void {
@@ -101,58 +75,92 @@ pub fn main(init: std.process.Init) !void {
     var loop = try io.Loop.init(.{});
     defer loop.deinit();
 
-    // Port 0 lets the kernel choose; `listener.address` reports the bound port.
-    var listener: io.Listener = try .init(&loop, try .parseLiteral("127.0.0.1:0"), .{ .backlog = 16 });
-    defer listener.deinit();
-
     var pool: velo.workers.Pool = undefined;
     try pool.init(init.gpa, &loop, 1);
     defer pool.deinit();
 
-    var handlers: [4]co.Frame(Handler) = undefined;
-
-    for (&handlers) |*frame| {
-        frame.* = .init(.init(.{ .listener = &listener }));
-        loop.spawn(frame);
-    }
-    defer for (&handlers) |*frame| frame.coroutine.ctx.cleanup();
+    // Each slot holds one connection's handler and buffer; a full server stops accepting.
+    var slots: [16]Server.Slot = undefined;
+    var server: co.Frame(Server) = .init(try .init(&loop, try .parseLiteral("127.0.0.1:0"), {}, &slots, .{}));
+    defer server.coroutine.deinit();
 
     var stopper: co.Frame(Stopper) = .init(.{ .loop = &loop, .input = .init(&pool, .{}) });
 
+    loop.spawn(&server);
     std.debug.print(
         "Listening on {f}; press Enter or send stdin EOF to stop.\n",
-        .{listener.address},
+        .{server.coroutine.listener.address},
     );
 
-    // Runs until Enter or EOF shuts down the loop and every handler drains.
+    // Runs until Enter or EOF shuts down the loop and every connection drains.
     try loop.block(&stopper);
-    for (&handlers) |*frame| try frame.getResult();
+    try server.getResult();
+
+    const stats = server.coroutine.stats;
+    std.debug.print("Served {d} connections, {d} failed.\n", .{ stats.accepted, stats.failed });
 }
 
-test "handler cancellation consumes queued children before closing sockets" {
-    inline for (.{ false, true }) |receiving| {
-        var loop = try io.Loop.init(.{ .entries = 8 });
-        defer loop.deinit();
+test "echo server answers a client and drains on loop shutdown" {
+    const Client = struct {
+        loop: *io.Loop,
+        address: io.Address,
+        stream: ?io.Stream = null,
+        reply: [5]u8 = undefined,
 
-        // An unbound socket parks accepts and receives until canceled.
-        var listener: io.Listener = .{ .loop = &loop, .fd = try io.tcpSocket(.ipv4), .address = undefined };
-        defer if (!receiving) listener.deinit();
+        pub const Result = anyerror!void;
+        pub const State = union(enum) {
+            dial: io.Dial,
+            ping: co.Join(.{ .send = io.SendAll, .read = io.ReadExact }),
+        };
+        const Next = co.Next(@This());
 
-        var frame: co.Frame(Handler) = .init(.init(.{
-            .listener = &listener,
-            .stream = if (receiving) .init(&loop, listener.fd) else null,
-        }));
+        pub fn start(self: *@This()) Next {
+            const until = io.deadlineIn(io.seconds(5)) catch |err| return self.done(err);
+            return .{ .go = .{ .dial = .init(self.loop, self.address, .{ .deadline = until }) } };
+        }
 
-        loop.spawn(&frame);
-        try std.testing.expect(loop.executor.runOne());
+        pub fn dial(self: *@This(), result: io.Error!io.Stream) Next {
+            var stream = result catch |err| return self.done(err);
+            stream.deadline = io.deadlineIn(io.seconds(5)) catch |err| return self.done(err);
+            self.stream = stream;
 
-        try std.testing.expectEqual(1, frame.task.outstanding_io);
+            return .{ .go = .{ .ping = .init(.{
+                .send = stream.sendAll("hello"),
+                .read = stream.readExact(&self.reply),
+            }) } };
+        }
 
-        frame.cancel();
-        loop.run() catch |err| std.debug.panic("I/O loop failed: {s}", .{@errorName(err)});
+        pub fn ping(self: *@This(), result: co.ResultOf(co.Join(.{ .send = io.SendAll, .read = io.ReadExact }))) Next {
+            result.send catch |err| return self.done(err);
+            result.read catch |err| return self.done(err);
 
-        try frame.getResult();
-        try std.testing.expectEqual(null, frame.coroutine.ctx.stream);
-        try std.testing.expectEqual(0, frame.task.outstanding_io);
-    }
+            return self.done(if (std.mem.eql(u8, &self.reply, "hello")) {} else error.WrongEcho);
+        }
+
+        // Shutdown is what ends the server, so every outcome triggers it.
+        fn done(self: *@This(), result: anyerror!void) Next {
+            if (self.stream) |stream| stream.close();
+            self.loop.shutdown();
+            return .{ .done = result };
+        }
+    };
+
+    var loop = try io.Loop.init(.{ .entries = 16 });
+    defer loop.deinit();
+
+    var slots: [2]Server.Slot = undefined;
+    var server: co.Frame(Server) = .init(try .init(&loop, try .parseLiteral("127.0.0.1:0"), {}, &slots, .{}));
+    defer server.coroutine.deinit();
+
+    var client: co.Frame(co.Machine(Client)) = .init(.init(.{
+        .loop = &loop,
+        .address = server.coroutine.listener.address,
+    }));
+
+    loop.spawn(&client);
+    try loop.block(&server);
+    try client.getResult();
+
+    try std.testing.expectEqual(1, server.coroutine.stats.accepted);
+    try std.testing.expectEqual(0, server.coroutine.stats.failed);
 }

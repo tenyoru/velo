@@ -130,6 +130,9 @@ TCP helpers remove sockaddr handling:
   `close` it after its operations finish.
 - `io.Dial` connects a new socket and closes it on failure, timeout or cancellation.
 - `io.milliseconds`, `io.seconds` and `io.deadlineIn` build durations and deadlines.
+- `io.Server(connect)` reserves a slot before each accept, builds the handler with
+  `connect(context, stream)`, closes the stream when the handler finishes, counts handler
+  errors without stopping, and drains on cancellation or shutdown. See `examples/echo.zig`.
 
 Concurrency composes the same way:
 
