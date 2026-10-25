@@ -160,8 +160,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `.github/workflows/release.yml`: `v*` tag → version check, tests, GitHub release
   with fetch hash
 - `build.zig`: the `velo` module, examples, and the `test`/`check`/`run-*` steps
-- `README.md`: user-facing overview, usage, coroutine-writing guide, rules, examples; API contracts
-  stay in doc comments, references in `Code sources` below
+- `README.md`: keep concise—overview, quick start, architecture, essential rules, and
+  example commands. Link to source docs instead of adding API inventories or long guides;
+  contracts stay in doc comments, references in `Code sources` below
 - `flake.nix`, `shell.nix`: development shell
 - `.gitignore`: deny-by-default; every new tracked path needs an allowlist entry
 
