@@ -54,6 +54,7 @@ pub const LoopOptions = struct {
 pub const Control = @import("Control.zig");
 pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
+pub const Transfer = @import("transfer.zig");
 pub const WithTimeout = @import("timeout.zig").WithTimeout;
 
 const net = @import("net.zig");
@@ -140,10 +141,12 @@ test {
     if (builtin.os.tag == .linux) {
         _ = @import("tests/uring.zig");
         _ = @import("tests/iowq.zig");
+        _ = @import("tests/transfer_linux.zig");
     }
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");
     _ = @import("tests/net.zig");
+    _ = @import("tests/transfer.zig");
     _ = @import("tests/server.zig");
 }

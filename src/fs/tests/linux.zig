@@ -47,12 +47,12 @@ test "filesystem data-only sync submits a datasync fsync SQE" {
             .coroutine = .init(&pool, .{ .file = .stdout(), .data_only = data_only }),
         };
 
-        try testing.expect(frame.coroutine == .native);
+        try testing.expect(frame.coroutine.tag == .native);
 
         loop.executor.spawn(&frame.task);
         loop.executor.run();
 
-        const op = &frame.coroutine.native.inner.operation;
+        const op = &frame.coroutine.storage.native.inner.operation;
         loop.pending.remove(&op.node);
         var sqe: linux.io_uring_sqe = undefined;
         op.prepare(&sqe, null);
@@ -90,9 +90,9 @@ test "filesystem forced uring roundtrip and per-opcode worker fallback" {
         var write: fs.WriteAt = .init(&pool, .{ .file = .stdout(), .buffer = "x" });
         var sync: fs.Sync = .init(&pool, .{ .file = .stdout() });
 
-        try testing.expectEqual(std.mem.eql(u8, capability, "read"), read == .worker);
-        try testing.expectEqual(std.mem.eql(u8, capability, "write"), write == .worker);
-        try testing.expectEqual(std.mem.eql(u8, capability, "sync"), sync == .worker);
+        try testing.expectEqual(std.mem.eql(u8, capability, "read"), read.tag == .worker);
+        try testing.expectEqual(std.mem.eql(u8, capability, "write"), write.tag == .worker);
+        try testing.expectEqual(std.mem.eql(u8, capability, "sync"), sync.tag == .worker);
 
         read.deinit();
         write.deinit();
@@ -139,7 +139,7 @@ test "filesystem forced uring returns native access and device errors without wo
     };
 
     inline for (.{ &read, &denied, &write, &sync }) |frame| {
-        try testing.expect(frame.coroutine == .native);
+        try testing.expect(frame.coroutine.tag == .native);
         loop.executor.spawn(&frame.task);
     }
     loop.executor.run();
@@ -154,8 +154,8 @@ test "filesystem forced uring returns native access and device errors without wo
     try testing.expectError(error.InvalidArgument, sync.getResult());
 
     inline for (.{ &read, &denied, &write, &sync }) |frame| {
-        try testing.expect(frame.coroutine == .native);
-        try testing.expect(frame.coroutine.native.inner.operation.primary.? < 0);
+        try testing.expect(frame.coroutine.tag == .native);
+        try testing.expect(frame.coroutine.storage.native.inner.operation.primary.? < 0);
 
         frame.coroutine.deinit();
     }
@@ -195,12 +195,12 @@ test "filesystem native SQEs and raw errno retain filesystem semantics without r
                     .{ .file = .stdout(), .buffer = &buffer, .offset = 17 }),
             };
 
-            try testing.expect(frame.coroutine == .native);
+            try testing.expect(frame.coroutine.tag == .native);
 
             loop.executor.spawn(&frame.task);
             loop.executor.run();
 
-            const op = &frame.coroutine.native.inner.operation;
+            const op = &frame.coroutine.storage.native.inner.operation;
             loop.pending.remove(&op.node);
             var sqe: linux.io_uring_sqe = undefined;
             op.prepare(&sqe, null);
@@ -268,7 +268,7 @@ test "filesystem native cancellation before poll and queued never submits" {
             loop.executor.run();
 
             try testing.expectError(error.OperationCanceled, frame.getResult());
-            try testing.expectEqual(null, frame.coroutine.native.inner.operation.primary);
+            try testing.expectEqual(null, frame.coroutine.storage.native.inner.operation.primary);
             try testing.expectEqual(null, loop.control.registrations.first);
 
             frame.coroutine.deinit();
@@ -299,7 +299,7 @@ test "filesystem native cancellation and shutdown retain both CQEs and successfu
             loop.executor.spawn(&frame.task);
             loop.executor.run();
 
-            const op = &frame.coroutine.native.inner.operation;
+            const op = &frame.coroutine.storage.native.inner.operation;
             loop.pending.remove(&op.node);
             var sqe: linux.io_uring_sqe = undefined;
             op.prepare(&sqe, null);
@@ -386,7 +386,7 @@ test "filesystem tiny native ring mixes file socket timer pressure and drains sh
             .coroutine = .init(&loop, .{ .duration = .{ .sec = 0, .nsec = 1 } }),
         };
 
-        try testing.expect(write.coroutine == .native);
+        try testing.expect(write.coroutine.tag == .native);
 
         loop.executor.spawn(&write.task);
         loop.executor.spawn(&timer.task);
@@ -418,7 +418,7 @@ test "filesystem tiny native ring mixes file socket timer pressure and drains sh
     var sync: co.Frame(fs.Sync) = .{
         .coroutine = .init(&pool, .{ .file = file }),
     };
-    try testing.expect(sync.coroutine == .native);
+    try testing.expect(sync.coroutine.tag == .native);
 
     finish(&loop, &sync);
 

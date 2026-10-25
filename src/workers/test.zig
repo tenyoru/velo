@@ -94,6 +94,64 @@ test "worker queued cancellation skips action and running cancellation retains r
     }
 }
 
+test "worker Machine repolls and cancels without copying running child storage" {
+    const Ctx = struct {
+        const Self = @This();
+        const Action = struct {
+            started: *std.Io.Event,
+            release: *std.atomic.Value(bool),
+            value: usize = 0,
+
+            pub fn run(self: *@This(), std_io: std.Io) error{}!usize {
+                self.started.set(std_io);
+                while (!self.release.load(.acquire)) self.value +%= 1;
+                return 17;
+            }
+        };
+        pub const Result = anyerror!usize;
+        pub const State = union(enum) { work: WorkerPool.Work(Action), finish: co.Yield };
+        pool: *WorkerPool,
+        action: Action,
+        result: Result = undefined,
+
+        pub fn start(self: *Self) co.Next(Self) {
+            return .{ .go = .{ .work = .init(self.pool, self.action) } };
+        }
+
+        pub fn work(self: *Self, result: Result) co.Next(Self) {
+            self.result = result;
+            return .{ .go = .{ .finish = .{} } };
+        }
+
+        pub fn finish(self: *Self, _: void) co.Next(Self) {
+            return .{ .done = self.result };
+        }
+    };
+    var loop = try io.Loop.init(.{});
+    defer loop.deinit();
+    var pool: WorkerPool = undefined;
+    try pool.init(testing.allocator, &loop, 1);
+    defer pool.deinit();
+    var started: std.Io.Event = .unset;
+    var release: std.atomic.Value(bool) = .init(false);
+    var frame: co.Frame(co.Machine(Ctx)) = .init(.init(.{
+        .pool = &pool,
+        .action = .{ .started = &started, .release = &release },
+    }));
+    loop.spawn(&frame);
+    loop.executor.run();
+    started.waitUncancelable(pool.threaded.io());
+    frame.task.wake();
+    loop.executor.run();
+    frame.cancel();
+    loop.executor.run();
+    release.store(true, .release);
+    support.run(&loop);
+    try testing.expectEqual(17, try frame.getResult());
+    try testing.expectEqual(0, frame.task.outstanding_io);
+    try support.drained(&loop);
+}
+
 test "worker task cancellation before submission never runs action" {
     var loop = try io.Loop.init(.{ .entries = 8 });
     defer loop.deinit();

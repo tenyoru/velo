@@ -51,39 +51,48 @@ fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime
     const Options = @FieldType(Worker, "action");
     const Native = @field(@import("native.zig"), name);
 
-    return union(enum) {
-        worker: Worker,
-        native: Native,
+    return struct {
+        tag: Tag,
+        /// Pinned child storage; inspect `tag`, not the payload, while pending.
+        storage: Storage,
 
         const Self = @This();
+        const Tag = enum { worker, native };
+        const Storage = union { worker: Worker, native: Native };
 
         pub fn init(pool: *Pool, options: Options) Self {
             if (@field(pool.loop.file_ops, capability) and
                 (if (builtin.os.tag == .windows) options.file.flags.nonblocking else true))
-                return .{ .native = Native.init(pool, options) };
+                return .{ .tag = .native, .storage = .{ .native = Native.init(pool, options) } };
 
-            return .{ .worker = Worker.init(pool, options) };
+            return .{ .tag = .worker, .storage = .{ .worker = Worker.init(pool, options) } };
         }
 
         pub fn poll(self: *Self, task: *co.Task) co.Poll(anyerror!T) {
-            switch (self.*) {
-                .worker => |*work| return work.poll(task),
-                .native => |*work| return work.poll(task),
+            switch (self.tag) {
+                inline else => |tag| return self.active(tag).poll(task),
             }
         }
 
         pub fn cancel(self: *Self) void {
-            switch (self.*) {
-                .worker => |*work| work.cancel(),
-                .native => |*work| work.cancel(),
+            switch (self.tag) {
+                inline else => |tag| self.active(tag).cancel(),
             }
         }
 
         pub fn deinit(self: *Self) void {
-            switch (self.*) {
-                .worker => |*work| work.deinit(),
-                .native => |*work| work.deinit(),
+            switch (self.tag) {
+                inline else => |tag| self.active(tag).deinit(),
             }
+        }
+
+        fn active(self: *Self, comptime tag: Tag) *@FieldType(Storage, @tagName(tag)) {
+            std.debug.assert(self.tag == tag);
+            return field: {
+                // Inspect only the separate tag while a worker may be publishing its result.
+                @setRuntimeSafety(false);
+                break :field &@field(self.storage, @tagName(tag));
+            };
         }
     };
 }

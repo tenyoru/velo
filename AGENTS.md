@@ -46,7 +46,8 @@ stackful fibers), so coroutines here are explicit state machines.
   contract, read it before writing a coroutine
 - `src/coroutines/machine.zig`: `Machine(Ctx)`/`Next`: one active child per state,
   handlers named after states, `start` after pinning, cancellation forwarded to later
-  children, comptime handler-signature diagnostics
+  children, comptime handler-signature diagnostics; separate active tag avoids copying
+  worker-owned payloads during polling/cancellation
 - `src/coroutines/scope.zig`: `Scope(C)`: children as separate tasks in caller slots,
   void/E!void results, first error cancels, FIFO reservations win cancellation, `wait`
   drains reserved and running slots
@@ -78,6 +79,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+- `src/event/transfer.zig`, `transfer_linux.zig`: `Transfer` between distinct regular files
+  and streams; bounded worker kernel copies (copy_file_range/sendfile/splice), async buffered
+  fallback, explicit offsets, retained progress/unwritten input, worker-local SIGPIPE handling
 - `src/event/net.zig`: `Address` (std `IpAddress`), `NativeAddress`, `Listener`,
   `Stream` with a shared deadline, `Dial` closing its socket unless connected
 - `src/event/server.zig`: `Server(connect)`: acceptor `Machine` (reserve, accept, backoff,
@@ -109,7 +113,8 @@ stackful fibers), so coroutines here are explicit state machines.
   default/epoll behavior and registration-error tests
 
 - `src/fs/root.zig`: `velo.fs`; operations select from
-  `loop.file_ops` at init, with worker fallback; Open/Create/Close always workers;
+  `loop.file_ops` at init, with worker fallback and separate tag/child storage;
+  Open/Create/Close always workers;
   `worker` exposes explicitly worker-backed operations
 - `src/fs/native.zig`: native file wrappers over shared `event.Operation`, filesystem errno mapping
 - `src/fs/worker.zig`: worker-backed file implementation using `workers.Pool.Work`,
@@ -129,6 +134,8 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
 - `src/event/tests/portable.zig`: native socket/timer integration tests on all three OSes
 - `src/event/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
+- `src/event/tests/transfer.zig`, `transfer_linux.zig`: file/stream combinations, offsets,
+  native and buffered paths, EOF, failures, cancellation/deadlines, SIGPIPE and pipe recovery
 - `src/event/tests/net.zig`: address conversion, listener/dial/stream exchange,
   refused and pre-canceled dials
 - `src/event/tests/server.zig`: slot backpressure, handler errors, live/pre-poll
@@ -230,6 +237,14 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [fallocate](https://man7.org/linux/man-pages/man2/fallocate.2.html): reserve/grow semantics;
   [Windows buffering](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering):
   logical-sector lengths/offsets and physical-sector buffer alignment.
+- **Kernel copies:** [copy_file_range](https://man7.org/linux/man-pages/man2/copy_file_range.2.html),
+  [sendfile](https://man7.org/linux/man-pages/man2/sendfile.2.html),
+  [splice](https://man7.org/linux/man-pages/man2/splice.2.html): short progress, explicit offsets,
+  unsupported-operation fallback; cross-filesystem copies use read/write to avoid Linux
+  5.3–5.18 false successes. Splice NONBLOCK alone does not make sockets nonblocking.
+  Recover pending pipe bytes before closing; zero-copy source data must stay unmodified
+  until consumed by the receiver. sendfile/splice lack MSG_NOSIGNAL: block/consume only
+  newly generated SIGPIPE on the worker, preserving its old mask and pending signal.
 - **Registered buffers:** [io_uring_register](https://man7.org/linux/man-pages/man2/io_uring_register.2.html):
   memlock accounting, containment and teardown. `Loop.Options.buffers` borrows at
   most 64 regions until deinit; `Uring.prepare` selects fixed opcodes transparently.

@@ -263,6 +263,7 @@ test "server backoff errors propagate after draining rather than reporting succe
         const acceptor = &server.coroutine.acceptor;
         acceptor.ctx.server = &server.coroutine;
         acceptor.state = acceptor.ctx.backoff(error.SystemResources).go;
+        acceptor.tag = .drain;
         acceptor.started = true;
         try testing.expectError(error.SystemResources, loop.block(&server));
         try testing.expectEqual(0, sessions);

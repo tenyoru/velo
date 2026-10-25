@@ -64,7 +64,7 @@ test "macOS filesystem forced worker fallback roundtrip" {
     var write: co.Frame(fs.WriteAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = "worker", .offset = 3 }),
     };
-    try testing.expect(write.coroutine == .worker);
+    try testing.expect(write.coroutine.tag == .worker);
 
     finish(&loop, &write);
 
@@ -73,7 +73,7 @@ test "macOS filesystem forced worker fallback roundtrip" {
     var sync: co.Frame(fs.Sync) = .{
         .coroutine = .init(&pool, .{ .file = file }),
     };
-    try testing.expect(sync.coroutine == .worker);
+    try testing.expect(sync.coroutine.tag == .worker);
 
     finish(&loop, &sync);
 
@@ -83,7 +83,7 @@ test "macOS filesystem forced worker fallback roundtrip" {
     var read: co.Frame(fs.ReadAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer, .offset = 3 }),
     };
-    try testing.expect(read.coroutine == .worker);
+    try testing.expect(read.coroutine.tag == .worker);
 
     finish(&loop, &read);
 
@@ -111,7 +111,7 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
     var write: co.Frame(fs.WriteAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = bytes }),
     };
-    try testing.expect(write.coroutine == .native);
+    try testing.expect(write.coroutine.tag == .native);
 
     finish(&loop, &write);
 
@@ -129,7 +129,7 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
     var read: co.Frame(fs.ReadAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer, .offset = 7 }),
     };
-    try testing.expect(read.coroutine == .native);
+    try testing.expect(read.coroutine.tag == .native);
 
     finish(&loop, &read);
 
@@ -159,7 +159,7 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
         finish(&loop, frame);
 
         try testing.expectEqual(0, try frame.getResult());
-        try testing.expectEqual(null, frame.coroutine.native.inner.operation.primary);
+        try testing.expectEqual(null, frame.coroutine.storage.native.inner.operation.primary);
     }
     try testing.expectEqual(0, pool.outstanding);
     try testing.expectEqual(null, pool.queue.first);
@@ -167,7 +167,7 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
     var sync: co.Frame(fs.Sync) = .{
         .coroutine = .init(&pool, .{ .file = file }),
     };
-    try testing.expect(sync.coroutine == .worker);
+    try testing.expect(sync.coroutine.tag == .worker);
 
     finish(&loop, &sync);
 
@@ -181,8 +181,8 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
         .coroutine = .init(&pool, .{ .file = file, .buffer = "" }),
     };
 
-    try testing.expect(read.coroutine == .worker);
-    try testing.expect(write.coroutine == .native);
+    try testing.expect(read.coroutine.tag == .worker);
+    try testing.expect(write.coroutine.tag == .native);
 
     read.coroutine.deinit();
     write.coroutine.deinit();
@@ -196,8 +196,8 @@ test "macOS native positional roundtrip offsets EOF empty and dispatch" {
         .coroutine = .init(&pool, .{ .file = file, .buffer = "" }),
     };
 
-    try testing.expect(read.coroutine == .native);
-    try testing.expect(write.coroutine == .worker);
+    try testing.expect(read.coroutine.tag == .native);
+    try testing.expect(write.coroutine.tag == .worker);
 
     read.coroutine.deinit();
     write.coroutine.deinit();
@@ -233,12 +233,12 @@ test "macOS native rejection preserves access descriptor stream and offset error
         var read: co.Frame(fs.ReadAt) = .{
             .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer }),
         };
-        try testing.expect(read.coroutine == .native);
+        try testing.expect(read.coroutine.tag == .native);
 
         finish(&loop, &read);
 
         try testing.expectError(expected, read.getResult());
-        try testing.expect(read.coroutine.native.inner.operation.primary.? < 0);
+        try testing.expect(read.coroutine.storage.native.inner.operation.primary.? < 0);
     }
 
     for ([_]fs.File{ read_only, invalid, socket }, [_]anyerror{
@@ -247,12 +247,12 @@ test "macOS native rejection preserves access descriptor stream and offset error
         var write: co.Frame(fs.WriteAt) = .{
             .coroutine = .init(&pool, .{ .file = file, .buffer = "x" }),
         };
-        try testing.expect(write.coroutine == .native);
+        try testing.expect(write.coroutine.tag == .native);
 
         finish(&loop, &write);
 
         try testing.expectError(expected, write.getResult());
-        try testing.expect(write.coroutine.native.inner.operation.primary.? < 0);
+        try testing.expect(write.coroutine.storage.native.inner.operation.primary.? < 0);
     }
 
     for ([_]u64{ @as(u64, std.math.maxInt(i64)) + 1, std.math.maxInt(u64) }) |offset| {
@@ -266,7 +266,7 @@ test "macOS native rejection preserves access descriptor stream and offset error
             finish(&loop, frame);
 
             try testing.expectError(error.InvalidArgument, frame.getResult());
-            try testing.expectEqual(null, frame.coroutine.native.inner.operation.primary);
+            try testing.expectEqual(null, frame.coroutine.storage.native.inner.operation.primary);
         }
     }
 
@@ -312,7 +312,7 @@ test "macOS native bounded same-file requests coexist with socket and timer even
             .coroutine = .init(&loop, .{ .duration = .{ .sec = 0, .nsec = 1 } }),
         };
 
-        try testing.expect(write.coroutine == .native);
+        try testing.expect(write.coroutine.tag == .native);
 
         loop.executor.spawn(&write.task);
         loop.executor.spawn(&timer.task);
@@ -367,7 +367,7 @@ test "macOS native cancellation before submission acquires no AIO ownership" {
             var frame: co.Frame(C) = .{
                 .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer }),
             };
-            try testing.expect(frame.coroutine == .native);
+            try testing.expect(frame.coroutine.tag == .native);
             if (queued) {
                 loop.executor.spawn(&frame.task);
                 loop.executor.run();
@@ -379,7 +379,7 @@ test "macOS native cancellation before submission acquires no AIO ownership" {
             support.run(&loop);
 
             try testing.expectError(error.OperationCanceled, frame.getResult());
-            try testing.expectEqual(null, frame.coroutine.native.inner.operation.primary);
+            try testing.expectEqual(null, frame.coroutine.storage.native.inner.operation.primary);
             try testing.expectEqual(0, frame.task.outstanding_io);
 
             frame.coroutine.deinit();

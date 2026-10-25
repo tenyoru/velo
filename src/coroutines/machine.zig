@@ -33,8 +33,10 @@ pub fn Machine(comptime Ctx: type) type {
 
     return struct {
         ctx: Ctx,
-        /// Active child; null before `start` and after `.done`.
+        /// Pinned child storage; do not read/copy while pending, since workers may mutate it.
         state: ?Ctx.State = null,
+        /// Active child tag; null before `start` and after `.done`.
+        tag: ?std.meta.Tag(Ctx.State) = null,
         started: bool = false,
         canceled: bool = false,
         task: ?*Task = null,
@@ -46,7 +48,7 @@ pub fn Machine(comptime Ctx: type) type {
         }
 
         pub fn poll(self: *Self, task: *Task) Poll(Ctx.Result) {
-            assert(!self.started or self.state != null);
+            assert(!self.started or self.tag != null);
             self.task = task;
 
             if (!self.started) {
@@ -55,9 +57,9 @@ pub fn Machine(comptime Ctx: type) type {
             }
 
             while (true) {
-                const next = switch (self.state.?) {
-                    inline else => |*child, tag| next: {
-                        const result = child.poll(task).value() orelse return .pending;
+                const next = switch (self.tag.?) {
+                    inline else => |tag| next: {
+                        const result = self.active(tag).poll(task).value() orelse return .pending;
                         break :next @field(Ctx, @tagName(tag))(&self.ctx, result);
                     },
                 };
@@ -70,8 +72,8 @@ pub fn Machine(comptime Ctx: type) type {
             if (self.canceled) return;
             self.canceled = true;
 
-            if (self.state) |*child| {
-                cancelChild(child);
+            if (self.tag != null) {
+                self.cancelChild();
                 if (self.task) |task| task.wake();
             }
         }
@@ -80,19 +82,30 @@ pub fn Machine(comptime Ctx: type) type {
             switch (next) {
                 .done => |result| {
                     self.state = null;
+                    self.tag = null;
                     return result;
                 },
                 .go => |state| {
                     self.state = state;
-                    if (self.canceled) cancelChild(&self.state.?);
+                    self.tag = state;
+                    if (self.canceled) self.cancelChild();
                     return null;
                 },
             }
         }
 
-        fn cancelChild(state: *Ctx.State) void {
-            switch (state.*) {
-                inline else => |*child| child.cancel(),
+        fn active(self: *Self, comptime tag: std.meta.Tag(Ctx.State)) *@FieldType(Ctx.State, @tagName(tag)) {
+            assert(self.tag == tag);
+            return field: {
+                // Union safety checks copy payloads, which may contain live worker results.
+                @setRuntimeSafety(false);
+                break :field &@field(self.state.?, @tagName(tag));
+            };
+        }
+
+        fn cancelChild(self: *Self) void {
+            switch (self.tag.?) {
+                inline else => |tag| self.active(tag).cancel(),
             }
         }
     };

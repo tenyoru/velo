@@ -64,7 +64,7 @@ test "windows filesystem ordinary handles select IOCP and preserve positional re
             .coroutine = .init(&pool, .{ .file = file, .buffer = "x", .offset = 7 + i }),
         };
 
-        std.debug.assert(write.coroutine == .native);
+        std.debug.assert(write.coroutine.tag == .native);
 
         loop.executor.spawn(&write.task);
     }
@@ -82,7 +82,7 @@ test "windows filesystem ordinary handles select IOCP and preserve positional re
     var read: co.Frame(fs.ReadAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer, .offset = 9 }),
     };
-    try testing.expect(read.coroutine == .native);
+    try testing.expect(read.coroutine.tag == .native);
 
     finish(&loop, &read);
 
@@ -142,7 +142,7 @@ test "windows filesystem ordinary handles select IOCP and preserve positional re
     read = .{
         .coroutine = .init(&pool, .{ .file = readonly, .buffer = &buffer, .offset = 7 }),
     };
-    try testing.expect(read.coroutine == .native);
+    try testing.expect(read.coroutine.tag == .native);
 
     finish(&loop, &read);
 
@@ -151,7 +151,7 @@ test "windows filesystem ordinary handles select IOCP and preserve positional re
     var denied: co.Frame(fs.WriteAt) = .{
         .coroutine = .init(&pool, .{ .file = readonly, .buffer = "!" }),
     };
-    try testing.expect(denied.coroutine == .native);
+    try testing.expect(denied.coroutine.tag == .native);
 
     finish(&loop, &denied);
 
@@ -230,7 +230,7 @@ test "windows filesystem workers interoperate before and after IOCP association"
         var sync: co.Frame(fs.Sync) = .{
             .coroutine = .init(&pool, .{ .file = file }),
         };
-        try testing.expect(sync.coroutine == .worker);
+        try testing.expect(sync.coroutine.tag == .worker);
 
         finish(&loop, &sync);
 
@@ -303,7 +303,7 @@ test "windows filesystem caller synchronous and special open handles stay on wor
     var write: co.Frame(fs.WriteAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = "fallback", .offset = 3 }),
     };
-    try testing.expect(write.coroutine == .worker);
+    try testing.expect(write.coroutine.tag == .worker);
 
     finish(&loop, &write);
 
@@ -313,7 +313,7 @@ test "windows filesystem caller synchronous and special open handles stay on wor
     var read: co.Frame(fs.ReadAt) = .{
         .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer, .offset = 3 }),
     };
-    try testing.expect(read.coroutine == .worker);
+    try testing.expect(read.coroutine.tag == .worker);
 
     finish(&loop, &read);
 
@@ -493,11 +493,11 @@ test "windows filesystem queued and inflight cancellation drain native packets i
                 var frame: co.Frame(C) = .{
                     .coroutine = .init(&pool, .{ .file = file, .buffer = &buffer[0] }),
                 };
-                try testing.expect(frame.coroutine == .native);
+                try testing.expect(frame.coroutine.tag == .native);
                 if (queued) {
                     loop.executor.spawn(&frame.task);
                     loop.executor.run();
-                    std.debug.assert(frame.coroutine.native.inner.operation.state == .queued);
+                    std.debug.assert(frame.coroutine.storage.native.inner.operation.state == .queued);
                 }
 
                 frame.coroutine.cancel();
@@ -524,13 +524,13 @@ test "windows filesystem queued and inflight cancellation drain native packets i
 
             for (&frames) |*frame| {
                 std.debug.assert(frame.result == null);
-                std.debug.assert(frame.coroutine.native.inner.operation.state == .inflight);
+                std.debug.assert(frame.coroutine.storage.native.inner.operation.state == .inflight);
                 std.debug.assert(frame.task.outstanding_io == 1);
                 if (!shutdown) {
                     frame.coroutine.cancel();
                     frame.coroutine.cancel();
                 }
-                std.debug.assert(frame.coroutine.native.inner.operation.registration.registered);
+                std.debug.assert(frame.coroutine.storage.native.inner.operation.registration.registered);
             }
 
             if (shutdown) loop.shutdown();

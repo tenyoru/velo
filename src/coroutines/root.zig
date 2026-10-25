@@ -7,6 +7,8 @@
 //! Custom wake sources must unregister before task completion and count their borrows in
 //! `task.outstanding_io` until ready is consumed, including completed, unconsumed results.
 //! Pin primitives, waiters and channel storage until ready is consumed.
+//! Do not copy pending children: workers can mutate their storage concurrently. Zig's
+//! union tag checks can copy payloads too; use `Machine` for sequential child storage.
 //! Granted permits/values win cancellation; clean them up.
 //! Primitives are single-threaded; cross-thread producers use `loop.control.post`.
 //! For children run in sequence, `Machine` (machine.zig) derives `poll` and `cancel`.

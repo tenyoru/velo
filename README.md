@@ -5,7 +5,8 @@ machines: nothing switches stacks.
 
 - **Coroutines:** `Machine` for sequential operations, `Join`/`Race` for composition,
   `Scope` for child tasks, plus channels and synchronization primitives.
-- **I/O:** TCP, UDP, timers, and files with cancellation; socket deadlines and timeouts.
+- **I/O:** TCP, UDP, timers, files, and file/stream transfers with cancellation;
+  socket deadlines and timeouts.
 - **Workers:** a blocking pool and one-loop-per-thread groups, with optional CPU
   affinity and Linux NUMA placement.
 - **Backends:** Linux io_uring with epoll fallback, macOS kqueue, Windows IOCP.

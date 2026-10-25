@@ -819,9 +819,9 @@ test "kqueue accepted AIO survives cancellation and shutdown until original comp
         loop.executor.run();
         loop.activate(nanoseconds(try now()));
         loop.start();
-        const accepted = read.coroutine.native.inner.operation.native.registered and
-            write.coroutine.native.inner.operation.native.registered;
-        const waiting = !queued.coroutine.native.inner.operation.native.registered;
+        const accepted = read.coroutine.storage.native.inner.operation.native.registered and
+            write.coroutine.storage.native.inner.operation.native.registered;
+        const waiting = !queued.coroutine.storage.native.inner.operation.native.registered;
         if (shutdown) {
             loop.shutdown();
             _ = loop.control.service(&loop.executor);
@@ -830,8 +830,8 @@ test "kqueue accepted AIO survives cancellation and shutdown until original comp
         }
         loop.cancelAndExpire(nanoseconds(now() catch unreachable)) catch unreachable;
         const retained = loop.file_inflight == 2 and
-            read.coroutine.native.inner.operation.native.registered and
-            write.coroutine.native.inner.operation.native.registered and
+            read.coroutine.storage.native.inner.operation.native.registered and
+            write.coroutine.storage.native.inner.operation.native.registered and
             read.task.outstanding_io == 1 and write.task.outstanding_io == 1;
         support.run(&loop);
         try testing.expect(accepted and waiting and retained);
