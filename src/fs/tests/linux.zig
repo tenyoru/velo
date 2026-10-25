@@ -570,6 +570,7 @@ fn directRoundtrip(loop: *io.Loop) !void {
 
             switch (linux.errno(raw)) {
                 .INVAL => try testing.expectError(error.InvalidArgument, frame.getResult()),
+                .IO => try testing.expectError(error.InputOutput, frame.getResult()),
                 .SUCCESS => {
                     try testing.expectEqual(raw, try frame.getResult());
                     if (is_read) {

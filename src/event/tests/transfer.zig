@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fs = @import("../../fs/root.zig");
 const io = @import("../root.zig");
 const co = @import("../../coroutines/root.zig");
@@ -62,6 +63,17 @@ test "transfer file and stream combinations preserve bytes, offsets and progress
                     try testing.expectEqual(data.len, copied.written);
                     try testing.expectEqual(0, copied.buffered().len);
                     copied.deinit();
+                    if (builtin.os.tag == .windows) {
+                        // Synchronous Windows handles update their cursor even for explicit offsets.
+                        try expectWindowsPosition(source, 6 + data.len);
+                        try expectWindowsPosition(destination, 3 + data.len + @as(u64, if (destination_stream) 4 else 0));
+                    } else {
+                        var prefix: [6]u8 = undefined;
+                        try testing.expectEqual(6, try source.readStreaming(testing.io, &.{&prefix}));
+                        try testing.expectEqualStrings("prefix", &prefix);
+                        try testing.expectEqual(3, try destination.readStreaming(testing.io, &.{prefix[0..3]}));
+                        try testing.expectEqualStrings("pre", prefix[0..3]);
+                    }
                     if (!destination_stream) {
                         try testing.expectEqual(data.len, try destination.readPositionalAll(testing.io, received, 3));
                         var edge: [4]u8 = undefined;
@@ -71,17 +83,26 @@ test "transfer file and stream combinations preserve bytes, offsets and progress
                         try testing.expectEqualStrings("tail", &edge);
                     }
                     try testing.expectEqualSlices(u8, data, received);
-                    var prefix: [6]u8 = undefined;
-                    try testing.expectEqual(6, try source.readStreaming(testing.io, &.{&prefix}));
-                    try testing.expectEqualStrings("prefix", &prefix);
-                    try testing.expectEqual(3, try destination.readStreaming(testing.io, &.{prefix[0..3]}));
-                    try testing.expectEqualStrings("pre", prefix[0..3]);
                     try testing.expectEqual(0, pool.outstanding);
                     try support.drained(&loop);
                 }
             }
         }
     }
+}
+
+fn expectWindowsPosition(file: fs.File, expected: u64) !void {
+    const w = std.os.windows;
+    var status: w.IO_STATUS_BLOCK = undefined;
+    var position: w.FILE.POSITION_INFORMATION = undefined;
+    try testing.expectEqual(w.NTSTATUS.SUCCESS, w.ntdll.NtQueryInformationFile(
+        file.handle,
+        &status,
+        &position,
+        @sizeOf(w.FILE.POSITION_INFORMATION),
+        .Position,
+    ));
+    try testing.expectEqual(expected, @as(u64, @intCast(position.CurrentByteOffset)));
 }
 
 test "transfer validates ranges and scratch, preserves empty requests, and stops at EOF" {
@@ -175,6 +196,11 @@ test "transfer fallback uses native-compatible file wrappers on associated handl
     var read: co.Frame(fs.ReadAt) = .init(.init(&pool, .{ .file = destination, .buffer = &bytes }));
     try testing.expectEqual(14, try loop.block(&read));
     try testing.expectEqualStrings("native handles", &bytes);
+    if (builtin.os.tag == .windows) {
+        try testing.expect(source.flags.nonblocking and destination.flags.nonblocking);
+        try expectWindowsPosition(source, 0);
+        try expectWindowsPosition(destination, 0);
+    }
     try support.drained(&loop);
 }
 

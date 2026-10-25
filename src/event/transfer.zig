@@ -5,8 +5,10 @@
 //!
 //! Stops at `len` or source EOF and returns bytes written. `read` and `written` retain
 //! progress on error; `buffered()` exposes consumed but unwritten input, including after
-//! cancellation. File positions are unchanged. Handles remain caller-owned and must
-//! outlive the transfer. File endpoints must refer to different files, including through
+//! cancellation. File offsets are explicit; positions are unchanged except on Windows
+//! synchronous handles, where positional I/O also updates the OS file pointer. Use
+//! overlapped handles (normally returned by fs.Open/Create) to preserve it on Windows.
+//! Handles remain caller-owned and must outlive the transfer. Files must differ, including through
 //! aliases; exclude source modification until a zero-copy receiver consumes the data.
 //! Append-only destinations are unsupported. Direct-I/O callers must supply suitably
 //! aligned buffers, lengths and offsets.

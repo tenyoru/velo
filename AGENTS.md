@@ -260,11 +260,14 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   a Dial timeout on macOS versus connection refusal on Linux/Windows.
 - **Windows file I/O** (checked 2026-10-21):
   [ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile),
+  [NtReadFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntreadfile),
   [ReOpenFile](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile),
   [GetQueuedCompletionStatus](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getqueuedcompletionstatus).
   Native success still awaits a packet. Worker transfers alone use a private
   event's low bit to suppress IOCP packets; APC-based std.Io.Threaded transfers
   cannot be used on associated handles. Windows Sync remains synchronous/worker-backed.
+  Explicit offsets still update the file pointer on synchronous Windows handles; only
+  overlapped handles preserve it. Transfer tests check positions before verification reads.
 - **Linux NUMA** (checked 2026-10-23):
   [mbind](https://man7.org/linux/man-pages/man2/mbind.2.html),
   [set_mempolicy](https://man7.org/linux/man-pages/man2/set_mempolicy.2.html),
