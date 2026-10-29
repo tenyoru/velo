@@ -122,6 +122,58 @@ const SignalTimer = struct {
     }
 };
 
+test "runtime task cancellation reaches queued and inflight I/O without a parent cancel method" {
+    const Timer = struct {
+        child: io.Timeout,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(io.Error!void) {
+            return self.child.poll(task);
+        }
+    };
+    const Canceller = struct {
+        target: *co.Frame(Timer),
+        timer: io.Timeout,
+        inflight: bool = false,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(io.Error!void) {
+            const result = self.timer.poll(task).value() orelse return .pending;
+            result catch |err| return .{ .ready = err };
+            self.inflight = self.target.coroutine.child.operation.state == .inflight;
+            self.target.cancel();
+            return .{ .ready = {} };
+        }
+    };
+
+    for (support.modes) |mode| {
+        for ([_]bool{ false, true }) |inflight| {
+            var loop = try support.initLoop(8, mode);
+            defer loop.deinit();
+            var frame: co.Frame(Timer) = .init(.{
+                .child = .init(&loop, .{ .duration = io.seconds(1) }),
+            });
+            try testing.expectEqual(null, frame.task.cancel_fn);
+            loop.spawn(&frame);
+            std.debug.assert(loop.executor.runOne());
+            std.debug.assert(frame.coroutine.child.operation.state == .queued);
+
+            var canceller: co.Frame(Canceller) = .init(.{
+                .target = &frame,
+                .timer = .init(&loop, .{ .duration = io.milliseconds(1) }),
+            });
+            if (inflight) loop.spawn(&canceller) else frame.cancel();
+            support.run(&loop);
+
+            if (inflight) {
+                try canceller.getResult();
+                try testing.expect(canceller.coroutine.inflight);
+            }
+            try testing.expectError(error.OperationCanceled, frame.getResult());
+            try testing.expectEqual(0, frame.task.outstanding_io);
+            try drained(&loop);
+        }
+    }
+}
+
 test "runtime external stop preserves live timer and shutdown drains task registry" {
     const Stopper = struct {
         fn run(loop: *io.Loop, gate: *std.Io.Event) void {

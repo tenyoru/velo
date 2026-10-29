@@ -196,6 +196,7 @@ pub fn Coroutine(comptime kind: Kind) type {
                 },
                 .queued, .inflight => {
                     assert(op.task == task);
+                    if (task.cancel_requested or op.loop.control.isShuttingDown()) op.requestCancel();
                     return .pending;
                 },
                 .complete => {
