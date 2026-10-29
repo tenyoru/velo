@@ -52,6 +52,7 @@ pub const LoopOptions = struct {
 };
 
 pub const Control = @import("Control.zig");
+pub const Mailbox = @import("Mailbox.zig").Mailbox;
 pub const SendAll = @import("stream.zig").SendAll;
 pub const ReadExact = @import("stream.zig").ReadExact;
 pub const Transfer = @import("transfer.zig");
@@ -146,6 +147,7 @@ test {
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");
+    _ = @import("tests/mailbox.zig");
     _ = @import("tests/net.zig");
     _ = @import("tests/transfer.zig");
     _ = @import("tests/server.zig");

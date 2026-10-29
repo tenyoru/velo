@@ -78,6 +78,9 @@ stackful fibers), so coroutines here are explicit state machines.
   WinAPI bindings (also used by `workers.Group` affinity)
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
   operation registry
+- `src/event/Mailbox.zig`: bounded typed MPSC mailbox; native mutex, FIFO Send/Recv,
+  thread-safe trySend/close, post-drained cancellation, receiving-loop retention until
+  close, shutdown registration and buffered-value cleanup with tryRecv
 - `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
 - `src/event/transfer.zig`, `transfer_linux.zig`: `Transfer` between distinct regular files
   and streams; bounded worker kernel copies (copy_file_range/sendfile/splice), async buffered
@@ -142,6 +145,8 @@ stackful fibers), so coroutines here are explicit state machines.
   cancellation, empty-slot rejection and backoff errors; deadline-bounded client scripts
 - `src/event/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
   stream-helper tests
+- `src/event/tests/mailbox.zig`: bounded FIFO, ownership, delayed notifications,
+  cancellation/shutdown and concurrent producer ordering
 
 - `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`; all except
   files carry tests
@@ -210,7 +215,12 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
 - **Tokio** (Rust, MIT): [repo](https://github.com/tokio-rs/tokio),
   [`runtime/scheduler/`](https://github.com/tokio-rs/tokio/tree/master/tokio/src/runtime/scheduler),
   [`runtime/io/driver.rs`](https://github.com/tokio-rs/tokio/blob/master/tokio/src/runtime/io/driver.rs):
-  stackless futures, task scheduling, readiness-driven I/O
+  stackless futures, task scheduling, readiness-driven I/O;
+  [`sync/mpsc/bounded.rs`](https://github.com/tokio-rs/tokio/blob/master/tokio/src/sync/mpsc/bounded.rs)
+  and [`sync/mpsc/chan.rs`](https://github.com/tokio-rs/tokio/blob/master/tokio/src/sync/mpsc/chan.rs):
+  bounded admission, close-then-drain and wake registration. Velo keeps unsuccessful
+  send values caller-owned and drains posts before freeing canceled frames; native
+  mutex operations use Zig 0.17 `std/Io/Threaded.zig`, without a stackful I/O backend.
 - **Go runtime** (BSD-3-Clause): [repo](https://github.com/golang/go),
   [`HACKING.md`](https://github.com/golang/go/blob/master/src/runtime/HACKING.md),
   [`netpoll.go`](https://github.com/golang/go/blob/master/src/runtime/netpoll.go):

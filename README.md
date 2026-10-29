@@ -7,8 +7,8 @@ machines: nothing switches stacks.
   `Scope` for child tasks, plus channels and synchronization primitives.
 - **I/O:** TCP, UDP, timers, files, and file/stream transfers with cancellation;
   socket deadlines and timeouts.
-- **Workers:** a blocking pool and one-loop-per-thread groups, with optional CPU
-  affinity and Linux NUMA placement.
+- **Workers:** a blocking pool, one-loop-per-thread groups, and bounded cross-thread
+  mailboxes, with optional CPU affinity and Linux NUMA placement.
 - **Backends:** Linux io_uring with epoll fallback, macOS kqueue, Windows IOCP.
 
 ## Usage
@@ -75,7 +75,8 @@ I/O. Scale with independent loops, one per thread.
 
 API contracts live in doc comments: [coroutines](src/coroutines/root.zig),
 [I/O](src/event/root.zig), [workers](src/workers/root.zig), and [files](src/fs/root.zig).
-See [Machine](src/coroutines/machine.zig) for sequential coroutines and
+See [Machine](src/coroutines/machine.zig) for sequential coroutines,
+[Mailbox](src/event/Mailbox.zig) for cross-loop messaging, and
 [NUMA](src/workers/numa/root.zig) for explicit placement.
 
 ## Examples
