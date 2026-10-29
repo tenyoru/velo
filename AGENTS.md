@@ -25,7 +25,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just test`: `zig build test --summary all`
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples bench`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
-- `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards> [-- args]`: run an example
+- `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards|mailbox> [-- args]`: run an example
 - `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability` and `numa`
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
 - `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
@@ -148,7 +148,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/tests/mailbox.zig`: bounded FIFO, ownership, delayed notifications,
   cancellation/shutdown and concurrent producer ordering
 
-- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`; all except
+- `examples/`: runnable `counters`, `wakeup`, `echo`, `files`, `pipeline`, `flusher`, `shards`, `mailbox`; all except
   files carry tests
 - `examples/counters.zig`: two independent counters print alternating steps by
   requeueing themselves, without timers or delays
@@ -164,6 +164,9 @@ stackful fibers), so coroutines here are explicit state machines.
   fixed ready work, expiration, cancellation and drain timings; included in test/check
 - `bench/numa.zig`: Linux dependent-memory benchmark, unpinned/pinned/local/remote;
   separately measured setup/warmup, CPU/residency/THP observation; included in test/check
+- `examples/mailbox.zig`: three client loops and one server exchange typed requests
+  and replies over bounded Mailboxes; graceful closure and error-path drain, tested
+  with automatic selection and forced epoll, including ThreadSanitizer
 - `examples/threadguard.zig`: deliberately panicking wrong-thread wake; not in
   `build.zig`, run by hand
 

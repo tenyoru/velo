@@ -89,6 +89,7 @@ zig build run-echo                     # TCP server using Machine and Server
 zig build run-files -- /tmp/velo-demo   # create, write, sync, and read a file
 zig build run-flusher                  # coalesced deadlines and graceful drain
 zig build run-shards -- 4 10000         # bounded requests across four loops
+zig build run-mailbox                   # typed request/reply with backpressure
 ```
 
 Browse [examples/](examples/) for complete programs. `echo` stops on Enter or stdin
