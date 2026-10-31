@@ -30,4 +30,6 @@
 !/bench/compare/tokio/src/*.rs
 
 !/.github/
-!/.github/**
+!/.github/workflows/
+!/.github/workflows/test.yml
+!/.github/workflows/release.yml
