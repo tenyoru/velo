@@ -250,15 +250,21 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/index.html) and
   [JoinSet](https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html): current-thread
   execution and awaiting every connection before server exit.
-- **Seastar** (C++, Apache-2.0): [repo](https://github.com/scylladb/seastar),
+- **Seastar** (C++, Apache-2.0, inspected `b3d32700b1afa27a882be44fd869dcca015d536f`):
+  [repo](https://github.com/scylladb/seastar),
   [`tutorial.md`](https://github.com/scylladb/seastar/blob/master/doc/tutorial.md),
   [`reactor_backend.cc`](https://github.com/scylladb/seastar/blob/master/src/core/reactor_backend.cc):
-  shared-nothing reactor, futures/continuations
+  shared-nothing reactor, futures/continuations;
+  [`reactor.cc`](https://github.com/scylladb/seastar/blob/master/src/core/reactor.cc):
+  task quota, `_sleeping` wake skip, idle polling, scheduling group vruntime; no work stealing
 - **Silk** (C++, Apache-2.0): [repo](https://github.com/ClickHouse/silk),
   [`coroutines.md`](https://github.com/ClickHouse/silk/blob/main/docs/coroutines.md):
   stackful fibers over io_uring, stackless vs stackful benchmarks
-- **PhotonLibOS** (C++, Apache-2.0): [repo](https://github.com/alibaba/PhotonLibOS),
+- **PhotonLibOS** (C++, Apache-2.0, inspected `5641e2771720e308c5ac80d61103ff9b968cefac`):
+  [repo](https://github.com/alibaba/PhotonLibOS),
   [`io/`](https://github.com/alibaba/PhotonLibOS/tree/main/io),
+  [`thread/thread.cpp`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread.cpp):
+  idler I/O polling, standby queue, opt-in stealing (stackful threads, so not portable here),
   [Stackful Coroutine Made Fast](https://photonlibos.github.io/blog/stackful-coroutine-made-fast)
 - **Ochi** (Zig 0.16, Apache-2.0, inspected `ffa7366a0b9e0ff1cc6fc8ea84c6e9758a932d95`):
   [`docs/internal/fibers.md`](https://github.com/ochi-team/ochi/blob/ffa7366a0b9e0ff1cc6fc8ea84c6e9758a932d95/docs/internal/fibers.md)
