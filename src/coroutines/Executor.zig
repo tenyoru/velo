@@ -12,14 +12,35 @@ const Executor = @This();
 pub const named = std.debug.runtime_safety;
 
 thread_guard: ThreadGuard = .{},
+/// Tasks without a `Class`; use `hasReady` to ask whether anything can run.
 ready: std.DoublyLinkedList = .{},
+classes: std.DoublyLinkedList = .{},
+/// Weighted poll time of `ready`, as if it were a class of `default_shares`.
+vruntime: f64 = 0,
+/// Least weighted time at the last pick; see `resumeQueue`.
+floor: f64 = 0,
 all_tasks: std.DoublyLinkedList = .{},
 cancel_next: ?*std.DoublyLinkedList.Node = null,
 stats: Stats = .{},
 slice: Slice = .{},
 
+pub const default_shares = 1000;
+
+/// A weighted share of loop time, e.g. background compaction beside request handling.
+/// Unclassed tasks compete at `default_shares`; a class alone on the loop gets all of it.
+/// Only `Loop.run` weighs classes; `run` here just drains them. Pin from `addClass` until
+/// the executor drains.
+pub const Class = struct {
+    shares: u32 = default_shares,
+    queue: std.DoublyLinkedList = .{},
+    vruntime: f64 = 0,
+    node: std.DoublyLinkedList.Node = .{},
+};
+
 /// Polls between two I/O turns, managed by the event loop's `run`.
 pub const Slice = struct {
+    /// The one queue this slice drains, so its whole duration can be charged to one class.
+    class: ?*Class = null,
     /// First clock read; short slices never take one.
     started: ?u64 = null,
     checked: u64 = 0,
@@ -58,6 +79,8 @@ pub const Task = struct {
     cancel_fn: ?*const fn (*Task) void = null,
     /// Borrowed waits/work, including completed results not yet consumed.
     outstanding_io: usize = 0,
+    /// Set before spawning; registered with `addClass`.
+    class: ?*Class = null,
     /// Set by `Frame` to its coroutine type name.
     name: if (named) []const u8 else void = if (named) "task" else {},
 
@@ -86,7 +109,10 @@ pub const Task = struct {
         switch (task.state) {
             .idle => {
                 task.state = .scheduled;
-                task.executor.?.ready.append(&task.node);
+                const ex = task.executor.?;
+                const queue = ex.queueOf(task.class);
+                if (queue.first == null and ex.classes.first != null) ex.resumeQueue(task.class);
+                queue.append(&task.node);
             },
             .scheduled => {},
             // Stale waker: the frame finished and may be reused.
@@ -97,6 +123,59 @@ pub const Task = struct {
         }
     }
 };
+
+pub fn addClass(ex: *Executor, class: *Class) void {
+    assert(class.shares != 0);
+    ex.classes.append(&class.node);
+}
+
+fn queueOf(ex: *Executor, class: ?*Class) *std.DoublyLinkedList {
+    return if (class) |c| &c.queue else &ex.ready;
+}
+
+// An idle queue must not bank credit, or waking would let it monopolize the loop.
+fn resumeQueue(ex: *Executor, class: ?*Class) void {
+    const vruntime = if (class) |c| &c.vruntime else &ex.vruntime;
+    vruntime.* = @max(vruntime.*, ex.floor);
+}
+
+pub fn hasReady(ex: *const Executor) bool {
+    if (ex.ready.first != null) return true;
+
+    var node = ex.classes.first;
+    while (node) |current| : (node = current.next) {
+        const class: *const Class = @alignCast(@fieldParentPtr("node", current));
+        if (class.queue.first != null) return true;
+    }
+
+    return false;
+}
+
+/// The ready queue with the least weighted time; null is the unclassed one.
+pub fn pickClass(ex: *Executor) ?*Class {
+    var best: ?*Class = null;
+    var least = if (ex.ready.first != null) ex.vruntime else std.math.inf(f64);
+
+    var node = ex.classes.first;
+    while (node) |current| : (node = current.next) {
+        const class: *Class = @alignCast(@fieldParentPtr("node", current));
+        if (class.queue.first == null or class.vruntime >= least) continue;
+        best = class;
+        least = class.vruntime;
+    }
+
+    ex.floor = least;
+    return best;
+}
+
+pub fn charge(ex: *Executor, class: ?*Class, elapsed_ns: u64) void {
+    const elapsed: f64 = @floatFromInt(elapsed_ns);
+    if (class) |c| {
+        c.vruntime += elapsed * default_shares / @as(f64, @floatFromInt(c.shares));
+    } else {
+        ex.vruntime += elapsed;
+    }
+}
 
 pub fn spawn(ex: *Executor, task: *Task) void {
     const entered = if (ThreadGuard.enabled) ex.thread_guard.enter() else false;
@@ -130,12 +209,16 @@ pub fn run(ex: *Executor) void {
     const entered = if (ThreadGuard.enabled) ex.thread_guard.enter() else false;
     defer if (ThreadGuard.enabled) ex.thread_guard.leave(entered);
 
-    while (ex.runOne()) {}
+    while (ex.hasReady()) {
+        ex.slice.class = ex.pickClass();
+        while (ex.runOne()) {}
+    }
+    ex.slice.class = null;
 }
 
 /// The task `runOne` would poll next.
 pub fn peek(ex: *Executor) ?*Task {
-    const node = ex.ready.first orelse return null;
+    const node = ex.queueOf(ex.slice.class).first orelse return null;
     return @alignCast(@fieldParentPtr("node", node));
 }
 
@@ -143,7 +226,7 @@ pub fn runOne(ex: *Executor) bool {
     const entered = if (ThreadGuard.enabled) ex.thread_guard.enter() else false;
     defer if (ThreadGuard.enabled) ex.thread_guard.leave(entered);
 
-    const node = ex.ready.popFirst() orelse return false;
+    const node = ex.queueOf(ex.slice.class).popFirst() orelse return false;
     const task: *Task = @alignCast(@fieldParentPtr("node", node));
 
     task.state = .idle;
@@ -158,7 +241,7 @@ pub fn runOne(ex: *Executor) bool {
         }
 
         // A task can wake itself and still finish, e.g. by dropping a yielded child.
-        if (task.state == .scheduled) ex.ready.remove(&task.node);
+        if (task.state == .scheduled) ex.queueOf(task.class).remove(&task.node);
 
         if (task.registered) {
             if (ex.cancel_next == &task.all_node) ex.cancel_next = task.all_node.next;

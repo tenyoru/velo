@@ -56,7 +56,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
 
                 if (try hooks.turn(loop)) continue;
                 // A queued send may be what completes an already-submitted receive.
-                if (loop.executor.ready.first != null or loop.pending.first != null) continue;
+                if (loop.executor.hasReady() or loop.pending.first != null) continue;
 
                 if (!hooks.inflight(loop) and !loop.control.hasWork()) {
                     if (!loop.control.idle(&loop.executor)) continue;
@@ -69,14 +69,20 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
         }
 
         fn runSlice(loop: *Loop) !void {
-            const slice = &loop.executor.slice;
-            slice.* = .{ .stride = slice.stride };
+            const executor = &loop.executor;
+            const slice = &executor.slice;
+            const weighted = executor.classes.first != null and executor.hasReady();
+            slice.* = .{ .stride = slice.stride, .class = if (weighted) executor.pickClass() else null };
+            const started = if (weighted) nanoseconds(try event.now()) else 0;
+            defer slice.class = null;
 
             var polls: usize = 0;
             while (polls < max_polls and !slice.over and try poll(loop)) : (polls += 1) {
                 slice.polls += 1;
                 if (slice.polls >= slice.stride) try checkSlice(loop);
             }
+
+            if (weighted) executor.charge(slice.class, nanoseconds(try event.now()) - started);
         }
 
         fn checkSlice(loop: *Loop) !void {
@@ -132,7 +138,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             if (std.debug.runtime_safety) checkDrained(loop);
             loop.control.deinit();
             assert(loop.active == 0 and loop.pending.first == null);
-            assert(loop.executor.ready.first == null and loop.executor.all_tasks.first == null);
+            assert(!loop.executor.hasReady() and loop.executor.all_tasks.first == null);
 
             hooks.close(loop);
         }
@@ -161,7 +167,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
         }
 
         fn drained(loop: *const Loop) bool {
-            return loop.executor.all_tasks.first == null and loop.executor.ready.first == null and
+            return loop.executor.all_tasks.first == null and !loop.executor.hasReady() and
                 loop.active == 0 and loop.pending.first == null and
                 loop.control.registrations.first == null and !loop.control.hasWork();
         }

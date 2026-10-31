@@ -114,7 +114,7 @@ pub fn hasWork(control: *const Control) bool {
 
 /// With no local work, recheck commands published before the final release before exiting.
 pub fn idle(control: *Control, executor: *Executor) bool {
-    return control.service(executor) or (executor.ready.first == null and !control.hasWork());
+    return control.service(executor) or (!executor.hasReady() and !control.hasWork());
 }
 
 pub fn register(control: *Control, registration: *Registration) void {

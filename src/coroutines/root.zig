@@ -18,6 +18,7 @@ const assert = std.debug.assert;
 
 pub const Executor = @import("Executor.zig");
 pub const Task = Executor.Task;
+pub const Class = Executor.Class;
 pub const Event = @import("Event.zig");
 pub const Semaphore = @import("Semaphore.zig");
 pub const Channel = @import("Channel.zig").Channel;

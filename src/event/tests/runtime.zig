@@ -192,6 +192,125 @@ test "shouldYield hands a long computation's next turn to I/O" {
     }
 }
 
+const Busy = struct {
+    done: *bool,
+    polls: usize = 0,
+
+    pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+        if (self.done.*) return .{ .ready = {} };
+        self.polls += 1;
+        var i: u32 = 0;
+        while (i < 2_000) : (i += 1) std.atomic.spinLoopHint();
+        task.wake();
+        return .pending;
+    }
+};
+
+const StopAfter = struct {
+    timer: io.Timeout,
+    done: *bool,
+
+    pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+        switch (self.timer.poll(task)) {
+            .pending => return .pending,
+            .ready => |result| {
+                result catch @panic("timer failed");
+                self.done.* = true;
+                return .{ .ready = {} };
+            },
+        }
+    }
+};
+
+test "classes split loop time by shares and unclassed tasks compete at the default" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        var done = false;
+        var foreground: co.Class = .{ .shares = 3000 };
+        var background: co.Class = .{ .shares = 500 };
+        loop.executor.addClass(&foreground);
+        loop.executor.addClass(&background);
+
+        var heavy: co.Frame(Busy) = .init(.{ .done = &done });
+        var light: co.Frame(Busy) = .init(.{ .done = &done });
+        var plain: co.Frame(Busy) = .init(.{ .done = &done });
+        var stopper: co.Frame(StopAfter) = .init(.{
+            .timer = io.Timeout.init(&loop, .{ .duration = io.milliseconds(120) }),
+            .done = &done,
+        });
+        heavy.task.class = &foreground;
+        light.task.class = &background;
+        loop.spawn(&heavy);
+        loop.spawn(&light);
+        loop.spawn(&plain);
+        loop.spawn(&stopper);
+        support.run(&loop);
+
+        const heavy_polls: f64 = @floatFromInt(heavy.coroutine.polls);
+        const light_polls: f64 = @floatFromInt(light.coroutine.polls);
+        const plain_polls: f64 = @floatFromInt(plain.coroutine.polls);
+        try testing.expect(heavy_polls / light_polls > 3 and heavy_polls / light_polls < 12);
+        try testing.expect(plain_polls / light_polls > 1 and plain_polls / light_polls < 4);
+        try drained(&loop);
+    }
+}
+
+test "a class waking from idle does not spend time it banked while asleep" {
+    const Late = struct {
+        timer: io.Timeout,
+        late: *co.Frame(Busy),
+        class: *co.Class,
+        loop: *io.Loop,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            switch (self.timer.poll(task)) {
+                .pending => return .pending,
+                .ready => |result| {
+                    result catch @panic("timer failed");
+                    self.late.task.class = self.class;
+                    self.loop.spawn(self.late);
+                    return .{ .ready = {} };
+                },
+            }
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        var done = false;
+        var sleeper: co.Class = .{};
+        loop.executor.addClass(&sleeper);
+
+        var busy: co.Frame(Busy) = .init(.{ .done = &done });
+        var late: co.Frame(Busy) = .init(.{ .done = &done });
+        var starter: co.Frame(Late) = .init(.{
+            .timer = io.Timeout.init(&loop, .{ .duration = io.milliseconds(60) }),
+            .late = &late,
+            .class = &sleeper,
+            .loop = &loop,
+        });
+        var stopper: co.Frame(StopAfter) = .init(.{
+            .timer = io.Timeout.init(&loop, .{ .duration = io.milliseconds(120) }),
+            .done = &done,
+        });
+        loop.spawn(&busy);
+        loop.spawn(&starter);
+        loop.spawn(&stopper);
+        support.run(&loop);
+
+        // Banked credit would give the sleeper the second half almost entirely.
+        const share = @as(f64, @floatFromInt(late.coroutine.polls)) /
+            @as(f64, @floatFromInt(busy.coroutine.polls));
+        try testing.expect(share < 0.7);
+        try testing.expect(late.coroutine.polls != 0);
+        try drained(&loop);
+    }
+}
+
 test "runtime MPSC posts preserve producer order and coalesce queued duplicates" {
     const State = struct {
         loop: *io.Loop,

@@ -381,7 +381,7 @@ fn expire(loop: *Loop) !void {
 }
 
 fn canWait(loop: *Loop) bool {
-    return loop.executor.ready.first == null and loop.pending.first == null and
+    return !loop.executor.hasReady() and loop.pending.first == null and
         loop.cancellations.first == null and loop.wake_armed and
         (loop.inflight() or loop.control.hasWork());
 }

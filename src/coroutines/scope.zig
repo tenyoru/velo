@@ -29,6 +29,8 @@ pub fn Scope(comptime C: type) type {
 
     return struct {
         executor: *co.Executor,
+        /// Applied to children as they spawn: the scope has no parent task to inherit from.
+        class: ?*co.Class = null,
         free: std.DoublyLinkedList = .{},
         running: std.DoublyLinkedList = .{},
         reserves: std.DoublyLinkedList = .{},
@@ -98,6 +100,7 @@ pub fn Scope(comptime C: type) type {
             slot.state = .running;
             slot.frame = .init(.{ .child = child, .scope = self, .slot = slot });
             self.running.append(&slot.node);
+            slot.frame.task.class = self.class;
             self.executor.spawn(&slot.frame.task);
 
             if (self.canceled) slot.frame.cancel();
@@ -295,6 +298,29 @@ const Child = struct {
         self.wait.cancel();
     }
 };
+
+test "scope children join the scope's class" {
+    var event: co.Event = .{};
+    defer event.deinit();
+
+    var ex: co.Executor = .{};
+    var class: co.Class = .{ .shares = 10 };
+    ex.addClass(&class);
+    var slots: [1]Scope(Child).Slot = undefined;
+    var scope: Scope(Child) = .init(&ex, &slots);
+    defer scope.deinit();
+    scope.class = &class;
+
+    var polls: usize = 0;
+    try scope.spawn(.{ .wait = event.wait(), .polls = &polls });
+    try std.testing.expectEqual(null, ex.ready.first);
+    try std.testing.expect(class.queue.first != null and ex.hasReady());
+
+    event.set();
+    ex.run();
+    try std.testing.expect(!ex.hasReady());
+    try std.testing.expectEqual(0, scope.active);
+}
 
 test "scope children wake independently, bound by slots, and wait drains them" {
     var event: co.Event = .{};

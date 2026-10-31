@@ -55,7 +55,7 @@ stackful fibers), so coroutines here are explicit state machines.
   tests stay beside their implementations
 - `src/coroutines/Executor.zig`: single-threaded intrusive run queue, `Task` (the
   waker), task registry and cancellation; safe-build task names, `writeTasks`/`dumpTasks`;
-  `Stats` counters
+  `Stats` counters; share-weighted `Class` queues, charged per slice (`vruntime`)
 - `src/coroutines/Event.zig`, `Semaphore.zig`, `Channel.zig`: single-threaded FIFO
   primitives
 
