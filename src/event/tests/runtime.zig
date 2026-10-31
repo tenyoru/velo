@@ -112,6 +112,86 @@ test "posts wake only a parked loop, once per empty stack" {
     }
 }
 
+fn burn(ms: u64) !void {
+    const start = try io.now();
+    while (true) {
+        const now = try io.now();
+        const elapsed = (now.sec - start.sec) * 1_000 + @divTrunc(now.nsec - start.nsec, 1_000_000);
+        if (elapsed >= ms) return;
+    }
+}
+
+test "long polls give I/O a turn within the quota and short ones keep the poll budget" {
+    const Spinner = struct {
+        left: usize,
+        ms: u64,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            self.left -= 1;
+            if (self.left == 0) return .{ .ready = {} };
+            burn(self.ms) catch @panic("clock failed");
+            task.wake();
+            return .pending;
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        // A poll budget alone would run 64 of these per turn, however long each took.
+        var long: [4]co.Frame(Spinner) = @splat(.init(.{ .left = 100, .ms = 1 }));
+        for (&long) |*frame| loop.spawn(frame);
+        var before = loop.stats();
+        support.run(&loop);
+        var after = loop.stats();
+        try testing.expect(after.polls - before.polls < (after.turns - before.turns) * 8);
+        if (co.Executor.named) try testing.expect(after.longest_poll_ns >= std.time.ns_per_ms);
+
+        var short: [4]co.Frame(Spinner) = @splat(.init(.{ .left = 20_000, .ms = 0 }));
+        for (&short) |*frame| loop.spawn(frame);
+        before = after;
+        support.run(&loop);
+        after = loop.stats();
+        const short_polls = after.polls - before.polls;
+        const short_turns = after.turns - before.turns;
+        try testing.expect(short_polls > short_turns * 32 and short_polls <= short_turns * 64);
+        try drained(&loop);
+    }
+}
+
+test "shouldYield hands a long computation's next turn to I/O" {
+    const Hog = struct {
+        loop: *io.Loop,
+        timer: *co.Frame(io.Timeout),
+        yields: usize = 0,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            if (self.timer.result != null) return .{ .ready = {} };
+            while (!self.loop.shouldYield()) std.atomic.spinLoopHint();
+            self.yields += 1;
+            task.wake();
+            return .pending;
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+        var timer: co.Frame(io.Timeout) = .{ .coroutine = io.Timeout.init(&loop, .{ .duration = io.milliseconds(5) }) };
+        var hog: co.Frame(Hog) = .init(.{ .loop = &loop, .timer = &timer });
+
+        loop.spawn(&timer);
+        loop.spawn(&hog);
+        support.run(&loop);
+
+        hog.getResult();
+        try timer.getResult();
+        try testing.expect(hog.coroutine.yields > 1);
+        try drained(&loop);
+    }
+}
+
 test "runtime MPSC posts preserve producer order and coalesce queued duplicates" {
     const State = struct {
         loop: *io.Loop,

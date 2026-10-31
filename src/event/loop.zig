@@ -13,6 +13,12 @@ const Control = @import("Control.zig");
 const Executor = @import("../coroutines/Executor.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 
+/// Polls per I/O turn: turns are cheap, so tasks that keep yielding must not delay I/O.
+const max_polls = 64;
+/// Upper bound for long polls, like Seastar's default task quota.
+const quota_ns = 500 * std.time.ns_per_us;
+/// A clock read costs several trivial polls, so short polls share one.
+const max_stride = 16;
 /// Safe builds report polls this long, like Seastar's stall detector.
 const stall_ns = 25 * std.time.ns_per_ms;
 
@@ -46,8 +52,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
                 loop.executor.stats.turns += 1;
                 if (loop.control.service(&loop.executor)) return;
 
-                var budget: usize = 64;
-                while (budget > 0 and try poll(loop)) : (budget -= 1) {}
+                try runSlice(loop);
 
                 if (try hooks.turn(loop)) continue;
                 // A queued send may be what completes an already-submitted receive.
@@ -61,6 +66,37 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
 
                 try park(loop);
             }
+        }
+
+        fn runSlice(loop: *Loop) !void {
+            const slice = &loop.executor.slice;
+            slice.* = .{ .stride = slice.stride };
+
+            var polls: usize = 0;
+            while (polls < max_polls and !slice.over and try poll(loop)) : (polls += 1) {
+                slice.polls += 1;
+                if (slice.polls >= slice.stride) try checkSlice(loop);
+            }
+        }
+
+        fn checkSlice(loop: *Loop) !void {
+            const slice = &loop.executor.slice;
+            const current = nanoseconds(try event.now());
+            defer {
+                slice.checked = current;
+                slice.polls = 0;
+            }
+
+            const started = slice.started orelse {
+                slice.started = current;
+                return;
+            };
+
+            // Aim for a few reads per quota: long polls are caught one at a time.
+            const elapsed = @max(current - slice.checked, 1);
+            const stride = quota_ns / 4 * @as(u64, @max(slice.polls, 1)) / elapsed;
+            slice.stride = @intCast(std.math.clamp(stride, 1, max_stride));
+            slice.over = current - started >= quota_ns;
         }
 
         fn poll(loop: *Loop) !bool {
@@ -140,6 +176,13 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             );
             loop.executor.dumpTasks();
             @panic("velo: loop deinit with live work; cancel or shut down, then run until drained");
+        }
+
+        /// For a long poll, between chunks of work: true once its slice has used the quota.
+        /// Return pending through `Yield` then; the next turn goes to I/O. Reads the clock.
+        pub fn shouldYield(loop: *Loop) bool {
+            if (!loop.executor.slice.over) checkSlice(loop) catch return true;
+            return loop.executor.slice.over;
         }
 
         /// Read on the loop thread, or after `run` returned and every producer finished.

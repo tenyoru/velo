@@ -16,6 +16,18 @@ ready: std.DoublyLinkedList = .{},
 all_tasks: std.DoublyLinkedList = .{},
 cancel_next: ?*std.DoublyLinkedList.Node = null,
 stats: Stats = .{},
+slice: Slice = .{},
+
+/// Polls between two I/O turns, managed by the event loop's `run`.
+pub const Slice = struct {
+    /// First clock read; short slices never take one.
+    started: ?u64 = null,
+    checked: u64 = 0,
+    polls: u32 = 0,
+    /// Polls before the next clock read; kept across slices to track poll length.
+    stride: u32 = 16,
+    over: bool = false,
+};
 
 /// Owning-thread counters: kept away from cross-thread state so counting never bounces its cache line.
 pub const Stats = struct {

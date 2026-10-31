@@ -164,6 +164,7 @@ pub const deinit = shared.deinit;
 pub const spawn = shared.spawn;
 pub const block = shared.block;
 pub const stats = shared.stats;
+pub const shouldYield = shared.shouldYield;
 pub const post = shared.post;
 pub const retain = shared.retain;
 pub const release = shared.release;
