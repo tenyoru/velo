@@ -20,7 +20,8 @@
 //! Linux statx(STATX_DIOALIGN), when supported, or filesystem/device documentation;
 //! Windows volume logical-sector multiples for lengths/offsets and physical-sector
 //! buffer alignment (IOCTL_STORAGE_QUERY_PROPERTY). 4096 is not a universal guarantee.
-//! Linux filesystems may reject misalignment or fall back to buffered I/O themselves.
+//! Linux filesystems may reject misalignment or fall back to buffered I/O themselves;
+//! misaligned memory can also block forever in the kernel (Hyper-V storvsc retries it).
 //! Allocate reserves backing storage for [offset, offset+len) and grows EOF to at
 //! least offset+len without shrinking or overwriting data. It always uses workers;
 //! offset+len must fit i64; len=0 does no I/O after validation. No zero-write emulation.

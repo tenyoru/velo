@@ -536,18 +536,15 @@ fn directRoundtrip(loop: *io.Loop) !void {
         for (buffer) |byte| try testing.expectEqual(0x5a, byte);
     }
 
-    // O_DIRECT may reject misalignment or fall back to buffered I/O.
+    // O_DIRECT may reject misalignment or fall back to buffered I/O. Misaligned memory
+    // stays untested: Hyper-V storvsc retries it forever in an unkillable read.
     inline for (.{ fs.ReadAt, fs.worker.ReadAt, fs.WriteAt, fs.worker.WriteAt }) |C| {
         const is_read = C == fs.ReadAt or C == fs.worker.ReadAt;
         if (!is_read) try file.setLength(testing.io, alignment + 1);
 
-        for (0..3) |case| {
-            const misaligned = switch (case) {
-                0 => buffer[0 .. buffer.len - 1],
-                1 => storage[start + 1 ..][0..alignment],
-                else => buffer,
-            };
-            const offset: usize = if (case == 2) 1 else 0;
+        for (0..2) |case| {
+            const misaligned = if (case == 0) buffer[0 .. buffer.len - 1] else buffer;
+            const offset: usize = case;
             @memset(misaligned, 0);
             const raw = while (true) {
                 const result = if (is_read)
