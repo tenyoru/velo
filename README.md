@@ -108,5 +108,6 @@ ThreadSanitizer: `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`.
 
 Build benchmarks with `zig build bench -Doptimize=ReleaseFast`:
 [scalability](bench/scalability.zig) measures TCP/timer workloads;
-[numa](bench/numa.zig) measures Linux memory locality. Run either binary in
+[numa](bench/numa.zig) measures Linux memory locality;
+[crossloop](bench/crossloop.zig) measures cross-loop posts. Run any of them in
 `zig-out/bin/` without arguments for usage.

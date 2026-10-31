@@ -19,8 +19,8 @@
 !/examples/*.zig
 
 !/bench/
-!/bench/scalability.zig
-!/bench/numa.zig
+!/bench/*.zig
+!/bench/*.md
 
 !/.github/
 !/.github/**

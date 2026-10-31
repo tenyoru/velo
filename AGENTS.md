@@ -26,8 +26,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples bench`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
 - `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards|mailbox> [-- args]`: run an example
-- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability` and `numa`
+- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`, `numa`, and `crossloop`
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
+- `zig build run-crossloop -Doptimize=ReleaseFast -- <auto|uring|epoll> <ping-pong|busy|paced> <messages> [loops=N] [rate=N] [work=N] [spin=NS] [pinned]`: cross-loop post cost, CPU and latency
 - `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
 - `zig build run-shards -- 4 10000 auto numa`: Linux placed shards with per-loop registered buffers
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
@@ -171,6 +172,8 @@ stackful fibers), so coroutines here are explicit state machines.
   fixed ready work, expiration, cancellation and drain timings; included in test/check
 - `bench/numa.zig`: Linux dependent-memory benchmark, unpinned/pinned/local/remote;
   separately measured setup/warmup, CPU/residency/THP observation; included in test/check
+- `bench/crossloop.zig`: cross-loop ping-pong, busy receiver and paced traffic over
+  `workers.Group`; CPU per message, latency percentiles and `Loop.stats`
 - `examples/mailbox.zig`: three client loops and one server exchange typed requests
   and replies over bounded Mailboxes; graceful closure and error-path drain, tested
   with automatic selection and forced epoll, including ThreadSanitizer
