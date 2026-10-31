@@ -1,6 +1,8 @@
 //! Cross-thread posts run on the loop thread; retain before producing, release after the last post.
 //! Keep nodes/payloads alive and free of concurrent mutation until their callback returns.
 //! Posts from one producer keep their order; re-posting a still-queued node coalesces.
+//! A final release can still be signaling after the loop drains: its loop must outlive the
+//! call, so join producers or use a barrier like `workers.Group`'s before deinit.
 
 const std = @import("std");
 
