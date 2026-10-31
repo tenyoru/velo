@@ -10,6 +10,7 @@ const ThreadGuard = @import("../ThreadGuard.zig");
 const Control = @This();
 
 head: std.atomic.Value(?*Post) = .init(null),
+parked: std.atomic.Value(bool) = .init(false),
 references: std.atomic.Value(usize) = .init(0),
 stop_requested: std.atomic.Value(bool) = .init(false),
 shutdown_requested: std.atomic.Value(bool) = .init(false),
@@ -31,7 +32,7 @@ pub const Registration = struct {
 };
 
 pub fn post(control: *Control, command: *Post) void {
-    if (control.push(command)) control.wake();
+    if (control.push(command) and control.parked.load(.seq_cst)) control.wake();
 }
 
 pub fn retain(control: *Control) void {
@@ -44,10 +45,10 @@ pub fn release(control: *Control) void {
 
 /// `post` then `release` with at most one wake.
 pub fn postRelease(control: *Control, command: *Post) void {
-    const first = control.push(command);
+    const blocked = control.push(command) and control.parked.load(.seq_cst);
     // Never write after drop: the loop may exit, so only the signal its owner must outwait is left.
-    if (first) _ = control.wakes.fetchAdd(1, .monotonic);
-    if (control.drop() or first) control.signal(control);
+    if (blocked) _ = control.wakes.fetchAdd(1, .monotonic);
+    if (control.drop() or blocked) control.signal(control);
 }
 
 fn wake(control: *Control) void {
@@ -64,7 +65,7 @@ fn push(control: *Control, command: *Post) bool {
     while (true) {
         command.next = head;
         // Never read the node after publishing it: its callback may already run.
-        head = control.head.cmpxchgWeak(head, command, .acq_rel, .acquire) orelse return head == null;
+        head = control.head.cmpxchgWeak(head, command, .seq_cst, .acquire) orelse return head == null;
     }
 }
 
@@ -90,6 +91,21 @@ pub fn shutdown(control: *Control) void {
 
 pub fn isShuttingDown(control: *const Control) bool {
     return control.shutdown_requested.load(.acquire);
+}
+
+/// True: block, then `leavePark`. False: a post raced in, so run it instead.
+/// Pairs with `post`: in the seq_cst order at least one side sees the other's write,
+/// so this recheck finds the post or the sender sees `parked` and wakes the loop.
+pub fn enterPark(control: *Control) bool {
+    control.parked.store(true, .seq_cst);
+    if (control.head.load(.seq_cst) == null) return true;
+
+    control.parked.store(false, .seq_cst);
+    return false;
+}
+
+pub fn leavePark(control: *Control) void {
+    control.parked.store(false, .seq_cst);
 }
 
 pub fn hasWork(control: *const Control) bool {

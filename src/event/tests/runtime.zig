@@ -11,6 +11,107 @@ fn drained(loop: *io.Loop) !void {
     try testing.expectEqual(null, loop.executor.all_tasks.first);
 }
 
+// A lost wake strands the producer here, not the loop, so the producer reports it.
+fn awaitAck(acked: *std.atomic.Value(usize), expected: usize, started: io.Timespec) void {
+    while (acked.load(.acquire) != expected) {
+        const now = io.now() catch @panic("clock failed");
+        if (now.sec - started.sec > 60) @panic("post stranded: lost wake");
+        std.atomic.spinLoopHint();
+    }
+}
+
+test "posts racing a parking loop are never stranded" {
+    const Producer = struct {
+        loop: *io.Loop,
+        rounds: usize,
+        // Sweeps the post across the window between the loop's last service and its block.
+        stride: usize,
+        post: io.Control.Post = .{ .callback = callback },
+        acked: std.atomic.Value(usize) = .init(0),
+
+        fn callback(post: *io.Control.Post) void {
+            const self: *@This() = @fieldParentPtr("post", post);
+            _ = self.acked.fetchAdd(1, .release);
+        }
+
+        fn produce(self: *@This()) void {
+            const started = io.now() catch @panic("clock failed");
+            for (0..self.rounds) |round| {
+                for (0..round * self.stride % 512) |_| std.atomic.spinLoopHint();
+                self.loop.post(&self.post);
+                awaitAck(&self.acked, round + 1, started);
+            }
+            self.loop.release();
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        var producers: [3]Producer = undefined;
+        var threads: [3]std.Thread = undefined;
+        for (&producers, &threads, 0..) |*producer, *thread, index| {
+            producer.* = .{ .loop = &loop, .rounds = 4_000, .stride = 3 + index * 2 };
+            loop.retain();
+            thread.* = try std.Thread.spawn(.{}, Producer.produce, .{producer});
+        }
+
+        support.run(&loop);
+        for (threads) |thread| thread.join();
+        for (&producers) |*producer| try testing.expectEqual(4_000, producer.acked.load(.acquire));
+        try drained(&loop);
+    }
+}
+
+test "posts wake only a parked loop, once per empty stack" {
+    const Counter = struct {
+        post: io.Control.Post = .{ .callback = callback },
+        ran: usize = 0,
+
+        fn callback(post: *io.Control.Post) void {
+            const self: *@This() = @fieldParentPtr("post", post);
+            self.ran += 1;
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+        var first: Counter = .{};
+        var second: Counter = .{};
+
+        loop.retain();
+        loop.post(&first.post);
+        try testing.expectEqual(0, loop.stats().wakes);
+
+        // The first sender owns the wake for everything behind it in the stack.
+        loop.control.parked.store(true, .seq_cst);
+        loop.post(&second.post);
+        try testing.expectEqual(0, loop.stats().wakes);
+        loop.control.parked.store(false, .seq_cst);
+
+        // Uncounted: a release must not write to a loop that it may have let exit.
+        loop.release();
+        try testing.expectEqual(0, loop.stats().wakes);
+        support.run(&loop);
+
+        loop.retain();
+        loop.control.parked.store(true, .seq_cst);
+        loop.post(&first.post);
+        try testing.expectEqual(1, loop.stats().wakes);
+        loop.control.parked.store(false, .seq_cst);
+        loop.release();
+        try testing.expectEqual(1, loop.stats().wakes);
+        support.run(&loop);
+
+        try testing.expectEqual(2, first.ran);
+        try testing.expectEqual(1, second.ran);
+        try testing.expectEqual(3, loop.stats().posts);
+        try drained(&loop);
+    }
+}
+
 test "runtime MPSC posts preserve producer order and coalesce queued duplicates" {
     const State = struct {
         loop: *io.Loop,

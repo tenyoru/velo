@@ -63,7 +63,8 @@ stackful fibers), so coroutines here are explicit state machines.
   selection, and lifetime contract
 - `src/event/Operation.zig`: shared operation state, typed coroutine wrappers,
   cancellation, and completion accounting
-- `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, `deinit`,
+- `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton,
+  the `enterPark` wrapper around `park`, `deinit`,
   `spawn`/`block` frame helpers, control forwarders, and safe-build live-task reports
   on undrained deinit or stalled `block`; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
@@ -79,7 +80,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/backends/Iocp.zig`, `win32.zig`: Windows completion loop and missing
   WinAPI bindings (also used by `workers.Group` affinity)
 - `src/event/Control.zig`: cross-thread posts, retain/release, stop, shutdown,
-  operation registry
+  operation registry; `enterPark` seq_cst recheck lets posts skip the wake of an awake loop
 - `src/event/Mailbox.zig`: bounded typed MPSC mailbox; native mutex, FIFO Send/Recv,
   thread-safe trySend/close, post-drained cancellation, receiving-loop retention until
   close, shutdown registration and buffered-value cleanup with tryRecv

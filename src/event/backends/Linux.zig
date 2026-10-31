@@ -281,7 +281,8 @@ fn park(loop: *Loop) !void {
 
 fn submitPending(loop: *Loop) !bool {
     // Waiting in the submitting enter saves a syscall per blocking iteration.
-    const parked = loop.ring.sq_ready() > 0 and loop.canWait();
+    const parked = loop.ring.sq_ready() > 0 and loop.canWait() and loop.control.enterPark();
+    defer if (parked) loop.control.leavePark();
     if (parked) loop.executor.stats.parks += 1;
 
     var wait: u32 = @intFromBool(parked);

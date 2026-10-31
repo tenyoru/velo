@@ -3,6 +3,7 @@
 //! - `turn() !bool`: advance I/O; true to repeat before the idle/park checks.
 //! - `inflight() bool`: native work can still complete.
 //! - `park() !void`: block for a completion, deadline, or wake; may return early.
+//!   Runs inside `Control.enterPark`, so a post that skipped its wake cannot strand it.
 //! - `close() void`: release native resources after the shared drain checks.
 
 const std = @import("std");
@@ -50,9 +51,16 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
                     return;
                 }
 
-                loop.executor.stats.parks += 1;
-                try hooks.park(loop);
+                try park(loop);
             }
+        }
+
+        fn park(loop: *Loop) !void {
+            if (!loop.control.enterPark()) return;
+            defer loop.control.leavePark();
+
+            loop.executor.stats.parks += 1;
+            try hooks.park(loop);
         }
 
         pub fn deinit(loop: *Loop) void {
