@@ -23,6 +23,4 @@
 !/bench/numa.zig
 
 !/.github/
-!/.github/workflows/
-!/.github/workflows/test.yml
-!/.github/workflows/release.yml
+!/.github/**
