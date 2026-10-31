@@ -23,14 +23,14 @@ pub const OperationState = struct {
     result: ?(io.Error!usize) = null,
 };
 
-const Deadline = struct {
+pub const Deadline = struct {
     // Intrusive nodes and task pointers only guarantee native pointer alignment.
     ns: i128 align(@alignOf(usize)),
     // Breaks ties: the treap keeps one node per key.
     op: usize,
 };
 
-const Deadlines = std.Treap(Deadline, struct {
+pub const Deadlines = std.Treap(Deadline, struct {
     fn order(a: Deadline, b: Deadline) std.math.Order {
         const by_time = std.math.order(a.ns, b.ns);
         return if (by_time == .eq) std.math.order(a.op, b.op) else by_time;
@@ -487,7 +487,7 @@ fn configure(fd: linux.fd_t) ?linux.E {
     }
 }
 
-fn nanoseconds(value: io.Timespec) i128 {
+pub fn nanoseconds(value: io.Timespec) i128 {
     return @as(i128, value.sec) * 1_000_000_000 + value.nsec;
 }
 

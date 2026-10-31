@@ -3,6 +3,7 @@ const linux = std.os.linux;
 const io = @import("../root.zig");
 const states = @import("../../state.zig");
 const assert = std.debug.assert;
+const Epoll = @import("Epoll.zig");
 
 pub const Loop = @import("Linux.zig");
 
@@ -12,7 +13,8 @@ pub const OperationState = union {
         message: linux.msghdr = undefined,
         vector: std.posix.iovec = undefined,
     },
-    epoll: @import("Epoll.zig").OperationState,
+    epoll: Epoll.OperationState,
+    timer: Epoll.Deadlines.Node,
 
     // A constant default lets constructors write in place; `prepare` claims the io_uring arm.
     pub const init: OperationState = .{ .epoll = .{} };
@@ -146,7 +148,7 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
         .sendto => |v| sqe.prep_sendmsg(v.fd, @ptrCast(datagram(op, &native.message, &native.vector)), linux.MSG.NOSIGNAL),
         .recvfrom => |v| sqe.prep_recvmsg(v.fd, datagram(op, &native.message, &native.vector), 0),
         .close => |v| sqe.prep_close(v.fd),
-        .timeout => sqe.prep_timeout(&op.time, 0, 0),
+        .timeout => unreachable,
         .read_at => |v| sqe.prep_read(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
         .write_at => |v| sqe.prep_write(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
         .sync => |v| sqe.prep_fsync(v.file.handle, if (v.data_only) linux.IORING_FSYNC_DATASYNC else 0),
@@ -221,7 +223,6 @@ fn result(op: *const io.Operation) io.Error!usize {
     }
 
     const e = errno(p).?;
-    if (op.data == .timeout and e == .TIME) return 0;
     if (op.linked) {
         const t = errno(op.timer);
         if (e == .CANCELED and t == .TIME) return error.Timeout;

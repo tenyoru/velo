@@ -83,7 +83,7 @@ test "io empty loop and minimum ring size" {
     try drained(&loop);
 }
 
-test "io kernel timeout wakes once and operation can be reused after ready" {
+test "io timer wakes once and operation can be reused after ready" {
     var loop = try uring(2);
     defer loop.deinit();
     var frame: co.Frame(Await(io.Timeout)) = .{
@@ -125,6 +125,109 @@ test "io kernel timeout wakes once and operation can be reused after ready" {
     frame.coroutine.op.deinit();
 
     try drained(&loop);
+}
+
+test "io timers take no ring capacity and leave nothing in the kernel to cancel" {
+    const Settle = struct {
+        loop: *io.Loop,
+        expected: usize,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            if (self.loop.active == self.expected and self.loop.pending.first == null) {
+                self.loop.stop();
+                return .{ .ready = {} };
+            }
+            task.wake();
+            return .pending;
+        }
+    };
+
+    // Far more timers than the two SQ slots could hold at once.
+    var loop = try uring(2);
+    defer loop.deinit();
+
+    var timers: [256]co.Frame(io.Timeout) = undefined;
+    for (&timers) |*timer| {
+        timer.* = .{ .coroutine = io.Timeout.init(&loop, .{ .duration = io.seconds(3600) }) };
+        loop.spawn(timer);
+    }
+    var settle: co.Frame(Settle) = .init(.{ .loop = &loop, .expected = timers.len });
+    loop.spawn(&settle);
+    run(&loop);
+
+    try testing.expectEqual(timers.len, loop.active);
+    try testing.expectEqual(0, loop.outstanding_cqes);
+
+    loop.shutdown();
+    run(&loop);
+    for (&timers) |*timer| try testing.expectError(error.OperationCanceled, timer.getResult());
+    try drained(&loop);
+}
+
+test "io timers bound waits with I/O in flight and expire in deadline order" {
+    const Sleeper = struct {
+        timer: io.Timeout,
+        clock: *usize,
+        finished: usize = 0,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            switch (self.timer.poll(task)) {
+                .pending => return .pending,
+                .ready => |result| {
+                    result catch @panic("timer failed");
+                    self.clock.* += 1;
+                    self.finished = self.clock.*;
+                    return .{ .ready = {} };
+                },
+            }
+        }
+    };
+
+    var loop = try uring(8);
+    defer loop.deinit();
+    const fds = try support.pair(&loop, .ipv4);
+    defer for (fds) |fd| support.close(fd);
+
+    var clock: usize = 0;
+    var buffer: [1]u8 = undefined;
+    var recv: co.Frame(Await(io.Recv)) = .init(.{ .op = io.Recv.init(&loop, .{
+        .fd = fds[0],
+        .buffer = &buffer,
+        .deadline = try support.deadline(60),
+    }) });
+    var sleepers: [3]co.Frame(Sleeper) = undefined;
+    for (&sleepers, [_]u32{ 9, 3, 6 }) |*sleeper, ms| {
+        sleeper.* = .init(.{ .timer = io.Timeout.init(&loop, .{ .duration = io.milliseconds(ms) }), .clock = &clock });
+    }
+
+    loop.spawn(&recv);
+    for (&sleepers) |*sleeper| loop.spawn(sleeper);
+    run(&loop);
+
+    try testing.expectError(error.Timeout, recv.getResult());
+    for (&sleepers, [_]usize{ 3, 1, 2 }) |*sleeper, finished|
+        try testing.expectEqual(finished, sleeper.coroutine.finished);
+    try drained(&loop);
+}
+
+test "io timers reject invalid durations and fire zero durations on both backends" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        for ([_]io.Timespec{ .{ .sec = -1, .nsec = 0 }, .{ .sec = 0, .nsec = -1 }, .{ .sec = 0, .nsec = 1_000_000_000 } }) |duration| {
+            var timer: co.Frame(io.Timeout) = .{ .coroutine = io.Timeout.init(&loop, .{ .duration = duration }) };
+            loop.spawn(&timer);
+            run(&loop);
+            try testing.expectError(error.InvalidArgument, timer.getResult());
+        }
+
+        var zero: co.Frame(io.Timeout) = .{ .coroutine = io.Timeout.init(&loop, .{ .duration = .{ .sec = 0, .nsec = 0 } }) };
+        loop.spawn(&zero);
+        run(&loop);
+        try zero.getResult();
+        try support.drained(&loop);
+    }
 }
 
 test "io linked recv expires and drains both CQEs; ready recv cancels long timer" {
@@ -353,7 +456,7 @@ test "io linked completion orders never wake early and preserve result precedenc
     };
 }
 
-test "io yielding peer cannot starve kernel timeout" {
+test "io yielding peer cannot starve a timer" {
     const Spinner = struct {
         stop: *bool,
         polls: usize = 0,

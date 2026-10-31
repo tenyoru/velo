@@ -10,7 +10,7 @@ stackful fibers), so coroutines here are explicit state machines.
 ## Toolchain
 
 - Zig 0.17.0 (`minimum_zig_version` in `build.zig.zon`)
-- I/O backends: Linux io_uring with epoll fallback, macOS kqueue, Windows IOCP
+- I/O backends: Linux io_uring (5.11+, for timed waits) with epoll fallback, macOS kqueue, Windows IOCP
   (64-bit Windows only)
 - The Nix shell targets x86_64-linux.
 - `nix develop` provides `zig_0_17` (nixos-unstable), `zls` (zigtools/zls flake input,
@@ -67,7 +67,8 @@ stackful fibers), so coroutines here are explicit state machines.
   on undrained deinit or stalled `block`; comptime check of backend fields and the
   `turn`/`inflight`/`park`/`close` hooks
 - `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
-  submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration
+  submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration;
+  `Timeout` as a user-space treap bounding `timedEnter` (EXT_ARG)
 - `src/event/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
   fd buckets, run queue, deadline treap
 - `src/event/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
@@ -246,7 +247,9 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   consumer workload: per-object flush timers, merge pool, shutdown drain
 - **io_uring:** [Lord of the io_uring](https://unixism.net/loti/);
   [io_uring_setup(2)](https://man7.org/linux/man-pages/man2/io_uring_setup.2.html)
-  feature flags, NODROP completion retention, overflow handling
+  feature flags, NODROP completion retention, overflow handling;
+  [io_uring_enter(2)](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html)
+  `IORING_ENTER_EXT_ARG` timed waits need a raw syscall: std's wrapper fixes the size argument.
 - **Direct I/O and allocation:** [Linux O_DIRECT](https://man7.org/linux/man-pages/man2/creat.2.html)
   and [F_SETFL](https://man7.org/linux/man-pages/man2/F_GETFL.2const.html):
   per-filesystem alignment and flag setup;

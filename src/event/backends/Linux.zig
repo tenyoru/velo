@@ -2,6 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const assert = std.debug.assert;
 const Operation = @import("../root.zig").Operation;
+const Error = @import("../root.zig").Error;
 const Executor = @import("../../coroutines/Executor.zig");
 const Uring = @import("Uring.zig");
 const Epoll = @import("Epoll.zig");
@@ -16,6 +17,8 @@ buffers: []const []u8 = &.{},
 executor: Executor = .{},
 pending: std.DoublyLinkedList = .{},
 cancellations: std.DoublyLinkedList = .{},
+// Software timers: a kernel timeout per timer costs an SQE, a CQE and async cancellation.
+timers: Epoll.Deadlines = .{},
 active: usize = 0,
 outstanding_cqes: usize = 0,
 running: bool = false,
@@ -28,8 +31,8 @@ pub fn init(options: Options) !Loop {
     return initWithBackend(options, .auto);
 }
 
-/// `.auto` falls back to epoll only when io_uring is denied, or the kernel lacks it or
-/// a required networking/control opcode.
+/// `.auto` falls back to epoll only when io_uring is denied, or the kernel lacks it,
+/// a required networking/control opcode, or timed waits (Linux 5.11).
 pub const Backend = enum { auto, uring, epoll };
 
 pub fn initWithBackend(options: Options, selected: Backend) !Loop {
@@ -171,7 +174,6 @@ const required_ops = [_]linux.IORING_OP{
     .POLL_ADD,
     .SENDMSG,
     .RECVMSG,
-    .TIMEOUT,
     .ACCEPT,
     .ASYNC_CANCEL,
     .LINK_TIMEOUT,
@@ -187,6 +189,8 @@ fn initUring(options: Options) !Loop {
 
     // Live requests can exceed CQ capacity; limiting them can strand their dependencies.
     if (ring.features & linux.IORING_FEAT_NODROP == 0) return error.SystemOutdated;
+    // Timers bound the blocking enter itself; see `timedEnter`.
+    if (ring.features & linux.IORING_FEAT_EXT_ARG == 0) return error.SystemOutdated;
 
     // NODROP arrived in 5.5, SEND/RECV/CLOSE and the probe in 5.6; 5.5 rejects the probe.
     const probe = ring.get_probe() catch |err| switch (err) {
@@ -218,6 +222,7 @@ fn supportsAll(probe: linux.io_uring_probe) bool {
 
 fn close(loop: *Loop) void {
     assert(loop.cancellations.first == null and loop.outstanding_cqes == 0);
+    assert(loop.timers.root == null);
 
     if (loop.epoll) |*state| Epoll.deinit(state) else loop.ring.deinit();
     _ = linux.close(loop.wake_fd);
@@ -225,6 +230,11 @@ fn close(loop: *Loop) void {
 
 pub fn cancel(loop: *Loop, op: *Operation) void {
     if (loop.epoll) |*state| return Epoll.cancel(state, op);
+
+    if (op.data == .timeout) {
+        loop.finishTimer(op, .CANCELED, error.OperationCanceled);
+        return;
+    }
 
     assert(op.native.uring.cancel == .none);
     op.native.uring.cancel = .pending;
@@ -239,7 +249,8 @@ fn turn(loop: *Loop) !bool {
     try loop.completions(0);
     if (loop.wake_received) return true;
 
-    loop.prepare();
+    try loop.prepare();
+    try loop.expire();
     if (try loop.submitPending()) {
         try loop.completions(0);
         return true;
@@ -250,14 +261,21 @@ fn turn(loop: *Loop) !bool {
 
 fn inflight(loop: *const Loop) bool {
     if (loop.epoll) |*state| return state.live != 0;
-    return loop.outstanding_cqes > 0;
+    return loop.outstanding_cqes > 0 or loop.timers.root != null;
 }
 
 fn park(loop: *Loop) !void {
     if (loop.epoll) |*state| return Epoll.park(loop, state);
 
     // A full SQ can defer arming; never block where a post cannot wake us.
-    if (loop.wake_armed) try loop.completions(1);
+    if (!loop.wake_armed) return;
+    if (loop.timers.root == null) return loop.completions(1);
+
+    _ = loop.timedEnter(0) catch |err| switch (err) {
+        error.SignalInterrupt => {},
+        else => return err,
+    };
+    try loop.completions(0);
 }
 
 fn submitPending(loop: *Loop) !bool {
@@ -267,7 +285,7 @@ fn submitPending(loop: *Loop) !bool {
 
     // sq_ready includes previously flushed SQEs left by partial submissions.
     while (loop.ring.sq_ready() > 0) {
-        const submitted = loop.ring.submit_and_wait(wait) catch |err| switch (err) {
+        const submitted = loop.submit(wait) catch |err| switch (err) {
             error.SignalInterrupt => continue,
             error.CompletionQueueOvercommitted => {
                 try loop.completions(0);
@@ -284,13 +302,85 @@ fn submitPending(loop: *Loop) !bool {
     return waited;
 }
 
+fn submit(loop: *Loop, wait: u32) !u32 {
+    if (wait == 0 or loop.timers.root == null) return loop.ring.submit_and_wait(wait);
+    return loop.timedEnter(loop.ring.flush_sq());
+}
+
+/// Waits for one completion, but no longer than the nearest timer. The timeout travels in
+/// the call, leaving nothing in the kernel to cancel; std's wrappers cannot pass it.
+fn timedEnter(loop: *Loop, to_submit: u32) !u32 {
+    const nearest = loop.timers.getMin().?.key.ns;
+    const remaining = @max(0, nearest - Epoll.nanoseconds(try Uring.now()));
+    var time: linux.kernel_timespec = .{
+        .sec = @intCast(@divTrunc(remaining, std.time.ns_per_s)),
+        .nsec = @intCast(@rem(remaining, std.time.ns_per_s)),
+    };
+    var arg: linux.io_uring_getevents_arg = .{
+        .sigmask = 0,
+        .sigmask_sz = linux.NSIG / 8,
+        .pad = 0,
+        .ts = @intFromPtr(&time),
+    };
+
+    const rc = linux.syscall6(
+        .io_uring_enter,
+        @as(u32, @bitCast(loop.ring.fd)),
+        to_submit,
+        1,
+        linux.IORING_ENTER_GETEVENTS | linux.IORING_ENTER_EXT_ARG,
+        @intFromPtr(&arg),
+        @sizeOf(linux.io_uring_getevents_arg),
+    );
+    return switch (linux.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .TIME => 0,
+        .INTR => error.SignalInterrupt,
+        .BUSY => error.CompletionQueueOvercommitted,
+        .AGAIN => error.SystemResources,
+        else => |e| Uring.mapError(e),
+    };
+}
+
+fn startTimer(loop: *Loop, op: *Operation, current: i128) void {
+    op.state = .inflight;
+
+    if (op.time.sec < 0 or op.time.nsec < 0 or op.time.nsec >= std.time.ns_per_s) {
+        op.primary = -@as(i32, @backingInt(linux.E.INVAL));
+        op.finish(error.InvalidArgument);
+        return;
+    }
+
+    op.native = .{ .timer = undefined };
+    var entry = loop.timers.getEntryFor(.{ .ns = current + Epoll.nanoseconds(op.time), .op = @intFromPtr(op) });
+    entry.set(&op.native.timer);
+}
+
+fn finishTimer(loop: *Loop, op: *Operation, e: linux.E, result: Error!usize) void {
+    var entry = loop.timers.getEntryForExisting(&op.native.timer);
+    entry.set(null);
+
+    op.primary = -@as(i32, @backingInt(e));
+    op.finish(result);
+}
+
+fn expire(loop: *Loop) !void {
+    if (loop.timers.root == null) return;
+
+    const current = Epoll.nanoseconds(try Uring.now());
+    while (loop.timers.getMin()) |nearest| {
+        if (nearest.key.ns > current) return;
+        loop.finishTimer(@ptrFromInt(nearest.key.op), .TIME, 0);
+    }
+}
+
 fn canWait(loop: *Loop) bool {
     return loop.executor.ready.first == null and loop.pending.first == null and
         loop.cancellations.first == null and loop.wake_armed and
-        (loop.outstanding_cqes > 0 or loop.control.hasWork());
+        (loop.inflight() or loop.control.hasWork());
 }
 
-fn prepare(loop: *Loop) void {
+fn prepare(loop: *Loop) !void {
     if (!loop.wake_armed) {
         if (loop.ring.get_sqe()) |sqe| {
             sqe.prep_poll_add(loop.wake_fd, linux.POLL.IN);
@@ -312,8 +402,17 @@ fn prepare(loop: *Loop) void {
         loop.outstanding_cqes += 1;
     }
 
+    var current: ?i128 = null;
     while (loop.pending.first) |node| {
         const op: *Operation = @fieldParentPtr("node", node);
+
+        if (op.data == .timeout) {
+            loop.pending.remove(node);
+            current = current orelse Epoll.nanoseconds(try Uring.now());
+            loop.startTimer(op, current.?);
+            continue;
+        }
+
         const count: usize = if (op.linked) 2 else 1;
         if (loop.ring.sq.sqes.len - loop.ring.sq_ready() < count) return;
 
