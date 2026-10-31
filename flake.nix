@@ -14,11 +14,18 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-    in
-    {
-      devShells.${system}.default = import ./shell.nix {
+      default = import ./shell.nix {
         inherit pkgs;
         zls = zls.packages.${system}.zls;
+      };
+    in
+    {
+      devShells.${system} = {
+        inherit default;
+        bench = pkgs.mkShell {
+          inputsFrom = [ default ];
+          packages = with pkgs; [ cargo rustc rustfmt libuv pkg-config python3 ];
+        };
       };
     };
 }
