@@ -1,0 +1,12 @@
+[package]
+name = "echo-tokio"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tokio = { version = "=1.54.1", features = ["rt", "net", "io-util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -12,3 +12,9 @@ test:
 
 fmt:
     zig fmt build.zig build.zig.zon src examples bench
+
+bench-compare *args:
+    python3 bench/compare/run.py {{args}}
+
+bench-check:
+    python3 bench/compare/test.py

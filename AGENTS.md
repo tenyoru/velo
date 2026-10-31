@@ -26,7 +26,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `just fmt`: `zig fmt build.zig build.zig.zon src examples bench`
 - `zig test src/root.zig -fllvm -fsanitize-thread -lc -j2`: Linux ThreadSanitizer tests
 - `zig build run-<counters|wakeup|echo|files|pipeline|flusher|shards|mailbox> [-- args]`: run an example
-- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`, `numa`, and `crossloop`
+- `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`, `numa`, `echo-velo`, and `crossloop`
+- `nix develop .#bench -c just bench-compare [args]`: Linux velo/libuv/Tokio TCP echo comparison; JSON Lines output
+- `nix develop .#bench -c just bench-check`: comparison integration and runner failure-path tests
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
 - `zig build run-crossloop -Doptimize=ReleaseFast -- <auto|uring|epoll> <ping-pong|busy|paced> <messages> [loops=N] [rate=N] [work=N] [spin=NS] [pinned]`: cross-loop post cost, CPU and latency
 - `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
@@ -174,6 +176,10 @@ stackful fibers), so coroutines here are explicit state machines.
   separately measured setup/warmup, CPU/residency/THP observation; included in test/check
 - `bench/crossloop.zig`: cross-loop ping-pong, busy receiver and paced traffic over
   `workers.Group`; CPU per message, latency percentiles and `Loop.stats`
+- `bench/echo.zig`: finite Linux TCP echo server (`echo-velo`), explicit backend,
+  concurrent accepts/clients, EOF drain; built by bench/check
+- `bench/compare/`: shared Python runner/tests, C/libuv and pinned Rust/Tokio servers;
+  optional `.#bench` Nix shell; methodology and commands in `bench/README.md`
 - `examples/mailbox.zig`: three client loops and one server exchange typed requests
   and replies over bounded Mailboxes; graceful closure and error-path drain, tested
   with automatic selection and forced epoll, including ThreadSanitizer
@@ -238,6 +244,12 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [`HACKING.md`](https://github.com/golang/go/blob/master/src/runtime/HACKING.md),
   [`netpoll.go`](https://github.com/golang/go/blob/master/src/runtime/netpoll.go):
   scheduler parking/wakeup, network polling (stackful goroutines)
+- **Comparison benchmarks:** [libuv streams](https://docs.libuv.org/en/v1.x/stream.html)
+  and [TCP](https://docs.libuv.org/en/v1.x/tcp.html): write buffers stay borrowed until
+  the completion callback; close callbacks drain before freeing handles.
+  [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/index.html) and
+  [JoinSet](https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html): current-thread
+  execution and awaiting every connection before server exit.
 - **Seastar** (C++, Apache-2.0): [repo](https://github.com/scylladb/seastar),
   [`tutorial.md`](https://github.com/scylladb/seastar/blob/master/doc/tutorial.md),
   [`reactor_backend.cc`](https://github.com/scylladb/seastar/blob/master/src/core/reactor_backend.cc):

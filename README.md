@@ -111,3 +111,5 @@ Build benchmarks with `zig build bench -Doptimize=ReleaseFast`:
 [numa](bench/numa.zig) measures Linux memory locality;
 [crossloop](bench/crossloop.zig) measures cross-loop posts. Run any of them in
 `zig-out/bin/` without arguments for usage.
+For the Linux TCP echo comparison with C/libuv and Rust/Tokio, see
+[benchmarks](bench/README.md).

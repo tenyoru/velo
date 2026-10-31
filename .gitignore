@@ -21,6 +21,13 @@
 !/bench/
 !/bench/*.zig
 !/bench/*.md
+!/bench/compare/
+!/bench/compare/*.py
+!/bench/compare/*.c
+!/bench/compare/tokio/
+!/bench/compare/tokio/Cargo.*
+!/bench/compare/tokio/src/
+!/bench/compare/tokio/src/*.rs
 
 !/.github/
 !/.github/**
