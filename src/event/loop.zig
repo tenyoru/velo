@@ -8,6 +8,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Control = @import("Control.zig");
+const Executor = @import("../coroutines/Executor.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 
 pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
@@ -33,6 +34,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             defer loop.running = false;
 
             while (true) {
+                loop.executor.stats.turns += 1;
                 if (loop.control.service(&loop.executor)) return;
 
                 var budget: usize = 64;
@@ -48,6 +50,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
                     return;
                 }
 
+                loop.executor.stats.parks += 1;
                 try hooks.park(loop);
             }
         }
@@ -104,6 +107,13 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
             );
             loop.executor.dumpTasks();
             @panic("velo: loop deinit with live work; cancel or shut down, then run until drained");
+        }
+
+        /// Read on the loop thread, or after `run` returned and every producer finished.
+        pub fn stats(loop: *const Loop) Executor.Stats {
+            var snapshot = loop.executor.stats;
+            snapshot.wakes = loop.control.wakes.load(.monotonic);
+            return snapshot;
         }
 
         pub fn post(loop: *Loop, command: *Control.Post) void {

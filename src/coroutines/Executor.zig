@@ -15,6 +15,22 @@ thread_guard: ThreadGuard = .{},
 ready: std.DoublyLinkedList = .{},
 all_tasks: std.DoublyLinkedList = .{},
 cancel_next: ?*std.DoublyLinkedList.Node = null,
+stats: Stats = .{},
+
+/// Owning-thread counters: kept away from cross-thread state so counting never bounces its cache line.
+pub const Stats = struct {
+    /// Passes through the run loop.
+    turns: u64 = 0,
+    /// Task polls.
+    polls: u64 = 0,
+    /// Blocking waits entered.
+    parks: u64 = 0,
+    /// Cross-thread posts delivered.
+    posts: u64 = 0,
+    /// Kernel wakes requested by posts and stops; `posts - wakes` were cheap.
+    /// A bare release goes uncounted: it must not write to the loop after dropping it.
+    wakes: u64 = 0,
+};
 
 /// Type-erased coroutine handle borrowed by wakers.
 pub const Task = struct {
@@ -111,6 +127,7 @@ pub fn runOne(ex: *Executor) bool {
     const task: *Task = @alignCast(@fieldParentPtr("node", node));
 
     task.state = .idle;
+    ex.stats.polls += 1;
 
     if (task.poll_fn(task)) {
         if (task.outstanding_io != 0) {

@@ -13,6 +13,7 @@ head: std.atomic.Value(?*Post) = .init(null),
 references: std.atomic.Value(usize) = .init(0),
 stop_requested: std.atomic.Value(bool) = .init(false),
 shutdown_requested: std.atomic.Value(bool) = .init(false),
+wakes: std.atomic.Value(u64) = .init(0),
 signal: *const fn (*Control) void,
 registrations: std.DoublyLinkedList = .{},
 cancel_next: ?*std.DoublyLinkedList.Node = null,
@@ -30,7 +31,7 @@ pub const Registration = struct {
 };
 
 pub fn post(control: *Control, command: *Post) void {
-    if (control.push(command)) control.signal(control);
+    if (control.push(command)) control.wake();
 }
 
 pub fn retain(control: *Control) void {
@@ -44,7 +45,14 @@ pub fn release(control: *Control) void {
 /// `post` then `release` with at most one wake.
 pub fn postRelease(control: *Control, command: *Post) void {
     const first = control.push(command);
+    // Never write after drop: the loop may exit, so only the signal its owner must outwait is left.
+    if (first) _ = control.wakes.fetchAdd(1, .monotonic);
     if (control.drop() or first) control.signal(control);
+}
+
+fn wake(control: *Control) void {
+    _ = control.wakes.fetchAdd(1, .monotonic);
+    control.signal(control);
 }
 
 // Only the push onto an empty stack must wake the loop: service takes the whole stack.
@@ -71,13 +79,13 @@ fn drop(control: *Control) bool {
 /// Stops without releasing live work, even during shutdown; rerun to resume/drain.
 pub fn stop(control: *Control) void {
     control.stop_requested.store(true, .release);
-    control.signal(control);
+    control.wake();
 }
 
 /// Permanently rejects new operations and requests cancellation of live work.
 pub fn shutdown(control: *Control) void {
     control.shutdown_requested.store(true, .release);
-    control.signal(control);
+    control.wake();
 }
 
 pub fn isShuttingDown(control: *const Control) bool {
@@ -125,6 +133,7 @@ pub fn service(control: *Control, executor: *Executor) bool {
     while (fifo) |command| {
         fifo = command.next;
         command.queued.store(false, .release);
+        executor.stats.posts += 1;
         command.callback(command);
     }
 

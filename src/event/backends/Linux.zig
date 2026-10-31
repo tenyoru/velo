@@ -163,6 +163,7 @@ pub const run = shared.run;
 pub const deinit = shared.deinit;
 pub const spawn = shared.spawn;
 pub const block = shared.block;
+pub const stats = shared.stats;
 pub const post = shared.post;
 pub const retain = shared.retain;
 pub const release = shared.release;
@@ -280,7 +281,10 @@ fn park(loop: *Loop) !void {
 
 fn submitPending(loop: *Loop) !bool {
     // Waiting in the submitting enter saves a syscall per blocking iteration.
-    var wait: u32 = if (loop.canWait()) 1 else 0;
+    const parked = loop.ring.sq_ready() > 0 and loop.canWait();
+    if (parked) loop.executor.stats.parks += 1;
+
+    var wait: u32 = @intFromBool(parked);
     var waited = false;
 
     // sq_ready includes previously flushed SQEs left by partial submissions.
