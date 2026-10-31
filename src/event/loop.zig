@@ -15,7 +15,7 @@ const Executor = @import("../coroutines/Executor.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 
 /// Polls per I/O turn: turns are cheap, so tasks that keep yielding must not delay I/O.
-const max_polls = 64;
+pub const max_polls = 64;
 /// Upper bound for long polls, like Seastar's default task quota.
 const quota_ns = 500 * std.time.ns_per_us;
 /// A clock read costs several trivial polls, so short polls share one.

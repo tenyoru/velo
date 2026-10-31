@@ -76,7 +76,9 @@ stackful fibers), so coroutines here are explicit state machines.
   submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration;
   `Timeout` as a user-space treap bounding `timedEnter` (EXT_ARG), `idle_spin_ns`
 - `src/event/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
-  fd buckets, run queue, deadline treap
+  fd buckets, run queue, deadline treap; ONESHOT registrations re-enabled by MOD, with
+  ADD on ENOENT rather than a table that reused fds would strand; `turn` checks readiness
+  only when work keeps the loop from parking
 - `src/event/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
   software timers, kevent64 and capability-probed native AIO reads/writes
 - `src/event/backends/DarwinAio.zig`: Darwin AIO ABI bindings, zero-length completion

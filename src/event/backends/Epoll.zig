@@ -5,6 +5,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const io = @import("../root.zig");
 const assert = std.debug.assert;
+const max_polls = @import("../loop.zig").max_polls;
 
 pub const OperationState = struct {
     deadline: Deadlines.Node = undefined,
@@ -43,6 +44,8 @@ pub const State = struct {
     // Operations to start, cancel, or finish on the next pass, oldest first.
     runnable: std.DoublyLinkedList = .{},
     deadlines: Deadlines = .{},
+    // Polls and posts run when readiness was last checked.
+    checked_at: u64 = 0,
     // Fixed buckets avoid allocation; colliding fds increase lookup cost.
     by_fd: [1024]?*io.Operation = @splat(null),
 };
@@ -64,13 +67,24 @@ pub fn deinit(state: *State) void {
 }
 
 pub fn turn(loop: *io.Loop, state: *State) !bool {
-    try activate(loop, state, nanoseconds(try io.now()));
+    if (loop.pending.first != null) try activate(loop, state, nanoseconds(try io.now()));
     try start(state);
 
     // service checks control directly; only a blocking poll needs the wake fd.
-    const woke = state.live != 0 and try events(loop, state, false);
-    try expire(state, nanoseconds(try io.now()));
+    const woke = state.live != 0 and starving(loop, state) and try events(loop, state, false);
+    if (state.deadlines.root != null) try expire(state, nanoseconds(try io.now()));
     return woke;
+}
+
+/// `park` checks readiness anyway, so `turn` only spends a syscall when work keeps it from
+/// parking. Posts count: a stream of them backs `park` out without any task running.
+fn starving(loop: *io.Loop, state: *const State) bool {
+    if (!loop.executor.hasReady() and !loop.control.hasPosts()) return false;
+    return loop.executor.slice.over or completed(loop) - state.checked_at >= max_polls;
+}
+
+fn completed(loop: *const io.Loop) u64 {
+    return loop.executor.stats.polls + loop.executor.stats.posts;
 }
 
 pub fn park(loop: *io.Loop, state: *State) !void {
@@ -323,25 +337,21 @@ fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
     }
 
     if (old != wanted) {
-        const change: u32 = if (wanted == 0)
-            linux.EPOLL.CTL_DEL
-        else if (old == 0)
-            linux.EPOLL.CTL_ADD
-        else
-            linux.EPOLL.CTL_MOD;
-        var event: linux.epoll_event = .{ .events = wanted, .data = .{ .fd = fd } };
-
-        while (true) {
-            const e = linux.errno(linux.epoll_ctl(
-                state.fd,
-                change,
-                fd,
-                if (wanted == 0) null else &event,
-            ));
-            if (e == .INTR) continue;
-            if (e != .SUCCESS and !(change == linux.EPOLL.CTL_DEL and e == .NOENT)) return e;
-            break;
-        }
+        const e: linux.E = if (wanted == 0) del: {
+            const e = control(state, linux.EPOLL.CTL_DEL, fd, null);
+            break :del if (e == .NOENT) .SUCCESS else e;
+        } else set: {
+            // A fired ONESHOT stays registered but disabled, so request/response I/O only
+            // needs MOD. The kernel drops it on close, so ask it: remembering registrations
+            // here would strand operations on a reused descriptor number.
+            var event: linux.epoll_event = .{
+                .events = wanted | linux.EPOLL.ONESHOT,
+                .data = .{ .fd = fd },
+            };
+            const e = control(state, linux.EPOLL.CTL_MOD, fd, &event);
+            break :set if (e == .NOENT) control(state, linux.EPOLL.CTL_ADD, fd, &event) else e;
+        };
+        if (e != .SUCCESS) return e;
     }
 
     // Transfer the registration only after the kernel has accepted the new mask.
@@ -354,6 +364,13 @@ fn refresh(state: *State, fd: linux.fd_t, exclude: ?*io.Operation) ?linux.E {
     return null;
 }
 
+fn control(state: *State, change: u32, fd: linux.fd_t, event: ?*linux.epoll_event) linux.E {
+    while (true) {
+        const e = linux.errno(linux.epoll_ctl(state.fd, change, fd, event));
+        if (e != .INTR) return e;
+    }
+}
+
 fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
     var timeout: i32 = 0;
     if (wait) {
@@ -363,6 +380,7 @@ fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
             -1;
     }
 
+    state.checked_at = completed(loop);
     var batch: [64]linux.epoll_event = undefined;
     const count = linux.epoll_wait(state.fd, &batch, batch.len, timeout);
     const e = linux.errno(count);
@@ -378,7 +396,14 @@ fn events(loop: *io.Loop, state: *State, wait: bool) !bool {
             continue;
         }
 
+        // ONESHOT disabled the fd's whole mask, not just the direction that fired. Each
+        // attempted waiter restores the rest through `arm` or `finish`.
         var next = bucket(state, event.data.fd).*;
+        while (next) |op| : (next = op.native.epoll.fd_next) {
+            if (socket(op) == event.data.fd) op.native.epoll.interest = 0;
+        }
+
+        next = bucket(state, event.data.fd).*;
         while (next) |op| {
             next = op.native.epoll.fd_next;
             if (!op.native.epoll.waiting or socket(op) != event.data.fd) continue;

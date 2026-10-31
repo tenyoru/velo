@@ -127,6 +127,227 @@ test "io timer wakes once and operation can be reused after ready" {
     try drained(&loop);
 }
 
+fn epollLoop() !io.Loop {
+    return io.Loop.initWithBackend(.{ .entries = 8 }, .epoll);
+}
+
+fn sendLater(fd: io.Socket) void {
+    std.Io.sleep(testing.io, .fromMilliseconds(2), .awake) catch {};
+    _ = linux.write(fd, "x", 1);
+}
+
+test "epoll leaves a fired fd registered but disabled" {
+    var loop = try epollLoop();
+    defer loop.deinit();
+    const fds = try support.pair(&loop, .ipv4);
+    defer for (fds) |fd| support.close(fd);
+
+    var buffer: [1]u8 = undefined;
+    var recv: co.Frame(Await(io.Recv)) = .init(.{ .op = io.Recv.init(&loop, .{
+        .fd = fds[0],
+        .buffer = &buffer,
+        .deadline = try support.deadline(5000),
+    }) });
+    loop.spawn(&recv);
+    const writer = try std.Thread.spawn(.{}, sendLater, .{fds[1]});
+    run(&loop);
+    writer.join();
+    try testing.expectEqual(1, try recv.getResult());
+
+    // Unread data must not raise events: level-triggered interest would spin the loop here.
+    try testing.expectEqual(1, linux.write(fds[1], "y", 1));
+    const state = &loop.epoll.?;
+    var batch: [1]linux.epoll_event = undefined;
+    try testing.expectEqual(0, linux.epoll_wait(state.fd, &batch, batch.len, 1));
+
+    var event: linux.epoll_event = .{ .events = linux.EPOLL.IN, .data = .{ .fd = fds[0] } };
+    try testing.expectEqual(.SUCCESS, linux.errno(linux.epoll_ctl(state.fd, linux.EPOLL.CTL_DEL, fds[0], &event)));
+}
+
+test "epoll rearms a descriptor number reused after close" {
+    var loop = try epollLoop();
+    defer loop.deinit();
+
+    const first = try support.pair(&loop, .ipv4);
+    var buffer: [1]u8 = undefined;
+    var recv: co.Frame(Await(io.Recv)) = .init(.{ .op = io.Recv.init(&loop, .{
+        .fd = first[0],
+        .buffer = &buffer,
+        .deadline = try support.deadline(5000),
+    }) });
+    loop.spawn(&recv);
+    var writer = try std.Thread.spawn(.{}, sendLater, .{first[1]});
+    run(&loop);
+    writer.join();
+    try testing.expectEqual(1, try recv.getResult());
+
+    // The closed fd left a disabled registration behind; its number now names a new socket.
+    for (first) |fd| support.close(fd);
+    const second = try support.pair(&loop, .ipv4);
+    defer for (second) |fd| support.close(fd);
+    const reused = second[0] == first[0] or second[1] == first[0];
+    try testing.expect(reused);
+
+    const target = if (second[0] == first[0]) second[0] else second[1];
+    const peer = if (second[0] == first[0]) second[1] else second[0];
+    var again: co.Frame(Await(io.Recv)) = .init(.{ .op = io.Recv.init(&loop, .{
+        .fd = target,
+        .buffer = &buffer,
+        .deadline = try support.deadline(5000),
+    }) });
+    loop.spawn(&again);
+    writer = try std.Thread.spawn(.{}, sendLater, .{peer});
+    run(&loop);
+    writer.join();
+    try testing.expectEqual(1, try again.getResult());
+    try support.drained(&loop);
+}
+
+test "epoll rearms the direction an event did not finish" {
+    const Drain = struct {
+        fn run(fd: io.Socket, sink: *[4096]u8, left: *std.atomic.Value(bool)) void {
+            std.Io.sleep(testing.io, .fromMilliseconds(2), .awake) catch {};
+            _ = linux.write(fd, "x", 1);
+            // Let the read event fire alone before the write side has room.
+            std.Io.sleep(testing.io, .fromMilliseconds(5), .awake) catch {};
+            while (left.load(.acquire)) _ = linux.read(fd, sink, sink.len);
+        }
+    };
+    const SendThenFlag = struct {
+        op: io.Send,
+        left: *std.atomic.Value(bool),
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(io.Error!usize) {
+            switch (self.op.poll(task)) {
+                .pending => return .pending,
+                .ready => |result| {
+                    self.left.store(false, .release);
+                    return .{ .ready = result };
+                },
+            }
+        }
+    };
+
+    var loop = try epollLoop();
+    defer loop.deinit();
+    const fds = try support.pair(&loop, .ipv4);
+    defer for (fds) |fd| support.close(fd);
+    // Nonblocking reads let the drain thread observe completion even when the peer is empty.
+    _ = linux.fcntl(fds[1], linux.F.SETFL, @as(usize, 1) << 11);
+
+    var chunk: [65536]u8 = @splat(7);
+    while (true) {
+        const rc = linux.sendto(fds[0], &chunk, chunk.len, linux.MSG.DONTWAIT, null, 0);
+        if (linux.errno(rc) == .AGAIN) break;
+    }
+
+    var buffer: [1]u8 = undefined;
+    var left: std.atomic.Value(bool) = .init(true);
+    var sink: [4096]u8 = undefined;
+    var recv: co.Frame(Await(io.Recv)) = .init(.{ .op = io.Recv.init(&loop, .{
+        .fd = fds[0],
+        .buffer = &buffer,
+        .deadline = try support.deadline(5000),
+    }) });
+    var send: co.Frame(SendThenFlag) = .init(.{
+        .op = io.Send.init(&loop, .{ .fd = fds[0], .buffer = chunk[0..1024], .deadline = try support.deadline(5000) }),
+        .left = &left,
+    });
+    loop.spawn(&recv);
+    loop.spawn(&send);
+    const drain = try std.Thread.spawn(.{}, Drain.run, .{ fds[1], &sink, &left });
+    run(&loop);
+    drain.join();
+
+    try testing.expectEqual(1, try recv.getResult());
+    try testing.expect(try send.getResult() > 0);
+    try support.drained(&loop);
+}
+
+const Pressure = enum { yields, long_polls, posts };
+
+test "epoll checks readiness under busy tasks and post floods" {
+    const Spinner = struct {
+        done: *std.atomic.Value(bool),
+        long: bool,
+        target: *const io.Operation,
+        long_polls: usize = 0,
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            if (self.done.load(.acquire)) return .{ .ready = {} };
+            // Only once armed: a slice that outlasts the writer would find data in the first recv.
+            if (self.long and self.target.native.epoll.waiting) {
+                self.long_polls += 1;
+                const start = io.now() catch @panic("clock failed");
+                while (true) {
+                    const now = io.now() catch @panic("clock failed");
+                    if ((now.sec - start.sec) * 1_000_000_000 + now.nsec - start.nsec >= 1_000_000) break;
+                }
+            }
+            task.wake();
+            return .pending;
+        }
+    };
+    const Reader = struct {
+        op: io.Recv,
+        done: *std.atomic.Value(bool),
+
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(io.Error!usize) {
+            switch (self.op.poll(task)) {
+                .pending => return .pending,
+                .ready => |result| {
+                    self.done.store(true, .release);
+                    return .{ .ready = result };
+                },
+            }
+        }
+    };
+    // Reposting from the callback keeps the stack non-empty at every `enterPark`, so the
+    // loop can never reach a blocking check by luck, as it could against another thread.
+    const Flood = struct {
+        loop: *io.Loop,
+        done: *std.atomic.Value(bool),
+        post: io.Control.Post = .{ .callback = callback },
+
+        fn callback(post: *io.Control.Post) void {
+            const self: *@This() = @fieldParentPtr("post", post);
+            if (!self.done.load(.acquire)) self.loop.post(&self.post);
+        }
+    };
+
+    for (std.enums.values(Pressure)) |pressure| {
+        var loop = try epollLoop();
+        defer loop.deinit();
+        const fds = try support.pair(&loop, .ipv4);
+        defer for (fds) |fd| support.close(fd);
+
+        var done: std.atomic.Value(bool) = .init(false);
+        var buffer: [1]u8 = undefined;
+        // The deadline turns starvation into a failure instead of a hung test.
+        var reader: co.Frame(Reader) = .init(.{
+            .op = io.Recv.init(&loop, .{ .fd = fds[0], .buffer = &buffer, .deadline = try support.deadline(5000) }),
+            .done = &done,
+        });
+        var spinner: co.Frame(Spinner) = .init(.{
+            .done = &done,
+            .long = pressure == .long_polls,
+            .target = &reader.coroutine.op.operation,
+        });
+        var flood: Flood = .{ .loop = &loop, .done = &done };
+
+        loop.spawn(&reader);
+        if (pressure == .posts) loop.post(&flood.post) else loop.spawn(&spinner);
+        const writer = try std.Thread.spawn(.{}, sendLater, .{fds[1]});
+        run(&loop);
+        writer.join();
+
+        try testing.expectEqual(1, try reader.getResult());
+        // One slice of 32 long polls is the worst case; 64 would mean the quota was ignored.
+        if (pressure == .long_polls) try testing.expect(spinner.coroutine.long_polls < 48);
+        try support.drained(&loop);
+    }
+}
+
 test "io timers take no ring capacity and leave nothing in the kernel to cancel" {
     const Settle = struct {
         loop: *io.Loop,
