@@ -71,7 +71,7 @@ stackful fibers), so coroutines here are explicit state machines.
   `turn`/`inflight`/`park`/`close` hooks
 - `src/event/backends/Linux.zig`, `Uring.zig`: Linux loop/selection, io_uring
   submissions and cancellation; explicit `LoopOptions.iowq_cpus` registration;
-  `Timeout` as a user-space treap bounding `timedEnter` (EXT_ARG)
+  `Timeout` as a user-space treap bounding `timedEnter` (EXT_ARG), `idle_spin_ns`
 - `src/event/backends/Epoll.zig`: Linux readiness fallback, per-direction FIFO over
   fd buckets, run queue, deadline treap
 - `src/event/backends/Kqueue.zig`: macOS readiness, serialized per-direction waiters,
@@ -253,6 +253,8 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   feature flags, NODROP completion retention, overflow handling;
   [io_uring_enter(2)](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html)
   `IORING_ENTER_EXT_ARG` timed waits need a raw syscall: std's wrapper fixes the size argument.
+  COOP/DEFER_TASKRUN hide completions from a spinning loop until it enters the kernel;
+  neither beat plain flags on loopback echo (checked 2026-10-31)
 - **Direct I/O and allocation:** [Linux O_DIRECT](https://man7.org/linux/man-pages/man2/creat.2.html)
   and [F_SETFL](https://man7.org/linux/man-pages/man2/F_GETFL.2const.html):
   per-filesystem alignment and flag setup;

@@ -77,6 +77,12 @@ pub fn park(loop: *io.Loop, state: *State) !void {
     _ = try events(loop, state, true);
 }
 
+/// Like `turn`, consumes readiness.
+pub fn ready(loop: *io.Loop, state: *State) !bool {
+    if (try events(loop, state, false)) return true;
+    return loop.executor.hasReady() or state.runnable.first != null;
+}
+
 pub fn cancel(state: *State, op: *io.Operation) void {
     enqueue(state, op);
 }

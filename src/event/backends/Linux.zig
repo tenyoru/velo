@@ -26,6 +26,7 @@ control: Control = .{ .signal = signalLoop },
 wake_fd: linux.fd_t = -1,
 wake_armed: bool = false,
 wake_received: bool = false,
+idle_spin_ns: u32 = 0,
 
 pub fn init(options: Options) !Loop {
     return initWithBackend(options, .auto);
@@ -49,6 +50,7 @@ pub fn initWithBackend(options: Options, selected: Backend) !Loop {
         },
     };
     errdefer if (loop.epoll) |*state| Epoll.deinit(state) else loop.ring.deinit();
+    loop.idle_spin_ns = options.idle_spin_ns;
 
     // Registration errors must not enter the setup-only automatic fallback above.
     if (loop.epoll == null and options.iowq_cpus.len != 0) {
@@ -157,6 +159,7 @@ const shared = @import("../loop.zig").Shared(Loop, .{
     .turn = turn,
     .inflight = inflight,
     .park = park,
+    .spin = spin,
     .close = close,
 });
 pub const run = shared.run;
@@ -280,9 +283,30 @@ fn park(loop: *Loop) !void {
     try loop.completions(0);
 }
 
+fn spin(loop: *Loop) !bool {
+    if (loop.idle_spin_ns == 0) return false;
+
+    // A timer at or past due ends the spin: `park` then returns at once and `turn` expires it.
+    const timers = if (loop.epoll) |*state| &state.deadlines else &loop.timers;
+    const window = Epoll.nanoseconds(try Uring.now()) + loop.idle_spin_ns;
+    const limit = if (timers.getMin()) |nearest| @min(nearest.key.ns, window) else window;
+    while (true) {
+        if (loop.control.hasPosts() or try loop.ready()) return true;
+        std.atomic.spinLoopHint();
+        if (Epoll.nanoseconds(try Uring.now()) >= limit) return false;
+    }
+}
+
+fn ready(loop: *Loop) !bool {
+    if (loop.epoll) |*state| return Epoll.ready(loop, state);
+    return loop.ring.cq_ready() != 0;
+}
+
 fn submitPending(loop: *Loop) !bool {
-    // Waiting in the submitting enter saves a syscall per blocking iteration.
-    const parked = loop.ring.sq_ready() > 0 and loop.canWait() and loop.control.enterPark();
+    // Waiting in the submitting enter saves a syscall per blocking iteration; spinning
+    // loops submit and wait in `run` instead, or they would sleep without polling first.
+    const parked = loop.ring.sq_ready() > 0 and loop.idle_spin_ns == 0 and
+        loop.canWait() and loop.control.enterPark();
     defer if (parked) loop.control.leavePark();
     if (parked) loop.executor.stats.parks += 1;
 

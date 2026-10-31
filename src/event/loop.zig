@@ -4,6 +4,7 @@
 //! - `inflight() bool`: native work can still complete.
 //! - `park() !void`: block for a completion, deadline, or wake; may return early.
 //!   Runs inside `Control.enterPark`, so a post that skipped its wake cannot strand it.
+//! - `spin() !bool` (optional): poll before parking; true if work may be ready.
 //! - `close() void`: release native resources after the shared drain checks.
 
 const std = @import("std");
@@ -64,6 +65,9 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
                     return;
                 }
 
+                if (@hasField(@TypeOf(hooks), "spin")) {
+                    if (try hooks.spin(loop)) continue;
+                }
                 try park(loop);
             }
         }

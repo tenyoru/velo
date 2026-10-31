@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io = @import("../root.zig");
 const co = @import("../../coroutines/root.zig");
 const support = @import("support.zig");
@@ -46,21 +47,24 @@ test "posts racing a parking loop are never stranded" {
     };
 
     for (support.modes) |mode| {
-        var loop = try support.initLoop(8, mode);
-        defer loop.deinit();
+        for ([_]u32{ 0, 2_000 }) |spin_ns| {
+            var loop = try support.initLoop(8, mode);
+            defer loop.deinit();
+            if (builtin.os.tag == .linux) loop.idle_spin_ns = spin_ns;
 
-        var producers: [3]Producer = undefined;
-        var threads: [3]std.Thread = undefined;
-        for (&producers, &threads, 0..) |*producer, *thread, index| {
-            producer.* = .{ .loop = &loop, .rounds = 4_000, .stride = 3 + index * 2 };
-            loop.retain();
-            thread.* = try std.Thread.spawn(.{}, Producer.produce, .{producer});
+            var producers: [3]Producer = undefined;
+            var threads: [3]std.Thread = undefined;
+            for (&producers, &threads, 0..) |*producer, *thread, index| {
+                producer.* = .{ .loop = &loop, .rounds = 4_000, .stride = 3 + index * 2 };
+                loop.retain();
+                thread.* = try std.Thread.spawn(.{}, Producer.produce, .{producer});
+            }
+
+            support.run(&loop);
+            for (threads) |thread| thread.join();
+            for (&producers) |*producer| try testing.expectEqual(4_000, producer.acked.load(.acquire));
+            try drained(&loop);
         }
-
-        support.run(&loop);
-        for (threads) |thread| thread.join();
-        for (&producers) |*producer| try testing.expectEqual(4_000, producer.acked.load(.acquire));
-        try drained(&loop);
     }
 }
 
@@ -108,6 +112,77 @@ test "posts wake only a parked loop, once per empty stack" {
         try testing.expectEqual(2, first.ran);
         try testing.expectEqual(1, second.ran);
         try testing.expectEqual(3, loop.stats().posts);
+        try drained(&loop);
+    }
+}
+
+test "idle spin ends on timers, posts and stop instead of waiting out its window" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const window = 4_000_000_000;
+    const Stopper = struct {
+        fn run(loop: *io.Loop) void {
+            std.Io.sleep(testing.io, .fromMilliseconds(1), .awake) catch {};
+            loop.stop();
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+        loop.idle_spin_ns = window;
+
+        var timer: co.Frame(io.Timeout) = .{ .coroutine = io.Timeout.init(&loop, .{ .duration = io.milliseconds(1) }) };
+        const started = try io.now();
+        loop.spawn(&timer);
+        support.run(&loop);
+        try timer.getResult();
+
+        loop.retain();
+        const stopper = try std.Thread.spawn(.{}, Stopper.run, .{&loop});
+        support.run(&loop);
+        stopper.join();
+        loop.release();
+        support.run(&loop);
+
+        const finished = try io.now();
+        try testing.expect(finished.sec - started.sec < 2);
+        try drained(&loop);
+    }
+}
+
+test "an expired idle spin parks and still wakes for a post" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const Late = struct {
+        post: io.Control.Post = .{ .callback = callback },
+        loop: *io.Loop,
+        ran: bool = false,
+
+        fn callback(post: *io.Control.Post) void {
+            const self: *@This() = @fieldParentPtr("post", post);
+            self.ran = true;
+        }
+
+        fn send(self: *@This()) void {
+            std.Io.sleep(testing.io, .fromMilliseconds(20), .awake) catch {};
+            self.loop.control.postRelease(&self.post);
+        }
+    };
+
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+        loop.idle_spin_ns = 10_000;
+        var late: Late = .{ .loop = &loop };
+
+        loop.retain();
+        const sender = try std.Thread.spawn(.{}, Late.send, .{&late});
+        support.run(&loop);
+        sender.join();
+
+        try testing.expect(late.ran);
+        try testing.expect(loop.stats().parks != 0);
         try drained(&loop);
     }
 }

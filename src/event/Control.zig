@@ -108,8 +108,12 @@ pub fn leavePark(control: *Control) void {
     control.parked.store(false, .seq_cst);
 }
 
+pub fn hasPosts(control: *const Control) bool {
+    return control.head.load(.acquire) != null;
+}
+
 pub fn hasWork(control: *const Control) bool {
-    return control.references.load(.acquire) != 0 or control.head.load(.acquire) != null;
+    return control.references.load(.acquire) != 0 or control.hasPosts();
 }
 
 /// With no local work, recheck commands published before the final release before exiting.

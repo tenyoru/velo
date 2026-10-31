@@ -49,6 +49,12 @@ pub const LoopOptions = struct {
     /// Some kernels intersect this with inherited user affinity when they overlap;
     /// use CPUs disjoint from a pinned loop CPU to keep worker execution off that CPU.
     iowq_cpus: []const usize = &.{},
+    /// Linux: poll this long before blocking, so a post costs neither a sender syscall nor
+    /// a sleep. Worthwhile only if work usually arrives within the window: otherwise each
+    /// idle gap burns it for nothing and the loop sleeps anyway, and spinning at a rate
+    /// that fills the window takes a whole core. Use on cores the loop owns.
+    /// Other backends ignore this.
+    idle_spin_ns: u32 = 0,
 };
 
 pub const Control = @import("Control.zig");
