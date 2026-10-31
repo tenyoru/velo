@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const io = @import("../event/root.zig");
+const Alignment = @import("DirectFile.zig").Alignment;
 const native = @import("native.zig");
 
 const linux = std.os.linux;
@@ -28,6 +29,24 @@ pub fn setDirect(file: std.Io.File) !void {
             else => |err| return native.mapError(.sync, err),
         }
     }
+}
+
+/// Null when the kernel or filesystem does not report direct I/O alignment.
+pub fn directAlignment(file: std.Io.File) !?Alignment {
+    var stat: linux.Statx = undefined;
+
+    while (true) {
+        const rc = linux.statx(file.handle, "", linux.AT.EMPTY_PATH, .{ .DIOALIGN = true }, &stat);
+        switch (linux.errno(rc)) {
+            .SUCCESS => break,
+            .INTR => continue,
+            .NOSYS, .INVAL => return null,
+            else => |err| return native.mapError(.sync, err),
+        }
+    }
+    if (!stat.mask.DIOALIGN) return null;
+
+    return .{ .memory = stat.dio_mem_align, .offset = stat.dio_offset_align };
 }
 
 pub fn transfer(

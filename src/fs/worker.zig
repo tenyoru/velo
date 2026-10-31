@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const workers = @import("../workers/root.zig");
+const DirectFile = @import("DirectFile.zig");
 const linux = @import("linux.zig");
 const macos = @import("macos.zig");
 const windows = @import("windows.zig");
@@ -18,28 +19,9 @@ pub const Open = workers.Pool.Work(struct {
     dir: std.Io.Dir,
     path: []const u8,
     flags: std.Io.Dir.OpenFileOptions = .{},
-    direct: bool = false,
 
     pub fn run(self: *@This(), io: std.Io) anyerror!File {
-        if (self.direct and (self.flags.path_only or
-            (builtin.os.tag == .windows and self.flags.lock != .none)))
-            return error.UnsupportedOperation;
-
-        const file = try self.dir.openFile(io, self.path, self.flags);
-        errdefer file.close(io);
-
-        if (builtin.os.tag == .windows and self.flags.lock == .none and !self.flags.path_only) {
-            return windows.upgrade(
-                io,
-                file,
-                self.flags.isRead(),
-                self.flags.isWrite(),
-                self.direct,
-            );
-        }
-        if (self.direct) try setDirect(file);
-
-        return file;
+        return openFile(io, self.dir, self.path, self.flags, false);
     }
 });
 
@@ -47,20 +29,39 @@ pub const Create = workers.Pool.Work(struct {
     dir: std.Io.Dir,
     path: []const u8,
     flags: std.Io.Dir.CreateFileOptions = .{},
-    direct: bool = false,
 
     pub fn run(self: *@This(), io: std.Io) anyerror!File {
-        if (self.direct and builtin.os.tag == .windows and self.flags.lock != .none)
-            return error.UnsupportedOperation;
+        return createFile(io, self.dir, self.path, self.flags, false);
+    }
+});
 
-        const file = try self.dir.createFile(io, self.path, self.flags);
+pub const OpenDirect = workers.Pool.Work(struct {
+    dir: std.Io.Dir,
+    path: []const u8,
+    flags: std.Io.Dir.OpenFileOptions = .{},
+    /// Used only when the OS cannot report the alignment.
+    fallback: ?DirectFile.Alignment = null,
+
+    pub fn run(self: *@This(), io: std.Io) anyerror!DirectFile {
+        const file = try openFile(io, self.dir, self.path, self.flags, true);
         errdefer file.close(io);
 
-        if (builtin.os.tag == .windows and self.flags.lock == .none)
-            return windows.upgrade(io, file, self.flags.read, true, self.direct);
-        if (self.direct) try setDirect(file);
+        return DirectFile.init(file, self.fallback);
+    }
+});
 
-        return file;
+pub const CreateDirect = workers.Pool.Work(struct {
+    dir: std.Io.Dir,
+    path: []const u8,
+    flags: std.Io.Dir.CreateFileOptions = .{},
+    /// Used only when the OS cannot report the alignment.
+    fallback: ?DirectFile.Alignment = null,
+
+    pub fn run(self: *@This(), io: std.Io) anyerror!DirectFile {
+        const file = try createFile(io, self.dir, self.path, self.flags, true);
+        errdefer file.close(io);
+
+        return DirectFile.init(file, self.fallback);
     }
 });
 
@@ -138,6 +139,46 @@ pub const Close = workers.Pool.Work(struct {
         self.file.close(io);
     }
 });
+
+fn openFile(
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+    flags: std.Io.Dir.OpenFileOptions,
+    direct: bool,
+) anyerror!File {
+    if (direct and (flags.path_only or (builtin.os.tag == .windows and flags.lock != .none)))
+        return error.UnsupportedOperation;
+
+    const file = try dir.openFile(io, path, flags);
+    errdefer file.close(io);
+
+    if (builtin.os.tag == .windows and flags.lock == .none and !flags.path_only)
+        return windows.upgrade(io, file, flags.isRead(), flags.isWrite(), direct);
+    if (direct) try setDirect(file);
+
+    return file;
+}
+
+fn createFile(
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+    flags: std.Io.Dir.CreateFileOptions,
+    direct: bool,
+) anyerror!File {
+    if (direct and builtin.os.tag == .windows and flags.lock != .none)
+        return error.UnsupportedOperation;
+
+    const file = try dir.createFile(io, path, flags);
+    errdefer file.close(io);
+
+    if (builtin.os.tag == .windows and flags.lock == .none)
+        return windows.upgrade(io, file, flags.read, true, direct);
+    if (direct) try setDirect(file);
+
+    return file;
+}
 
 fn setDirect(file: File) !void {
     switch (builtin.os.tag) {

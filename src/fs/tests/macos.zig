@@ -403,19 +403,20 @@ test "macOS direct cache hint supports worker and available native transfers" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var create: co.Frame(fs.Create) = .{
+    var create: co.Frame(fs.CreateDirect) = .{
         .coroutine = .init(&pool, .{
             .dir = tmp.dir,
             .path = "nocache",
             .flags = .{ .read = true },
-            .direct = true,
         }),
     };
 
     finish(&loop, &create);
 
-    const file = try create.getResult();
+    const direct = try create.getResult();
+    const file = direct.file;
     defer file.close(testing.io);
+    try testing.expectEqual(fs.DirectFile.Alignment{ .memory = 1, .offset = 1 }, direct.alignment);
 
     const FNOCACHE = 0x00040000;
     const flags = std.c.fcntl(file.handle, std.c.F.GETFL, @as(c_int, 0));
@@ -435,25 +436,21 @@ test "macOS direct cache hint supports worker and available native transfers" {
         try testing.expectEqual(10, try write.getResult());
     }
 
-    var open: co.Frame(fs.Open) = .{
-        .coroutine = .init(&pool, .{
-            .dir = tmp.dir,
-            .path = "nocache",
-            .direct = true,
-        }),
+    var open: co.Frame(fs.OpenDirect) = .{
+        .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "nocache" }),
     };
 
     finish(&loop, &open);
 
     const reopened = try open.getResult();
-    defer reopened.close(testing.io);
-    const reopened_flags = std.c.fcntl(reopened.handle, std.c.F.GETFL, @as(c_int, 0));
+    defer reopened.file.close(testing.io);
+    const reopened_flags = std.c.fcntl(reopened.file.handle, std.c.F.GETFL, @as(c_int, 0));
     try testing.expect(reopened_flags >= 0 and reopened_flags & FNOCACHE != 0);
 
     inline for (.{ fs.ReadAt, fs.worker.ReadAt }) |C| {
         var buffer: [10]u8 = undefined;
         var read: co.Frame(C) = .{
-            .coroutine = .init(&pool, .{ .file = reopened, .buffer = &buffer, .offset = 3 }),
+            .coroutine = .init(&pool, .{ .file = reopened.file, .buffer = &buffer, .offset = 3 }),
         };
 
         finish(&loop, &read);
@@ -461,6 +458,14 @@ test "macOS direct cache hint supports worker and available native transfers" {
         try testing.expectEqual(10, try read.getResult());
         try testing.expectEqualStrings("cache hint", &buffer);
     }
+
+    var buffer: [10]u8 = undefined;
+    var read: co.Frame(fs.ReadAt) = .{ .coroutine = try reopened.readAt(&pool, &buffer, 3) };
+
+    finish(&loop, &read);
+
+    try testing.expectEqual(10, try read.getResult());
+    try testing.expectEqualStrings("cache hint", &buffer);
 
     try testing.expectEqual(0, pool.outstanding);
     try support.drained(&loop);

@@ -562,34 +562,24 @@ test "windows direct filesystem native and isolated worker transfers enforce sec
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
 
-    var frame: co.Frame(fs.Create) = .{
+    var frame: co.Frame(fs.CreateDirect) = .{
         .coroutine = .init(&pool, .{
             .dir = tmp.dir,
             .path = "direct",
             .flags = .{ .read = true },
-            .direct = true,
         }),
     };
 
     finish(&loop, &frame);
 
-    const file = try frame.getResult();
+    const direct = try frame.getResult();
+    const file = direct.file;
     defer file.close(testing.io);
 
     try testing.expect(file.flags.nonblocking);
 
-    var storage_info: extern struct {
-        logical: u32,
-        physical_atomic: u32,
-        physical_performance: u32,
-        effective_atomic: u32,
-        flags: u32,
-        sector_offset: u32,
-        partition_offset: u32,
-    } = undefined;
-    try testing.expect(w.GetFileInformationByHandleEx(file.handle, w.FileStorageInfo, &storage_info, @sizeOf(@TypeOf(storage_info))) != 0);
-    const alignment: usize = @max(storage_info.logical, storage_info.physical_atomic, storage_info.effective_atomic);
-    try testing.expect(storage_info.logical > 1 and std.math.isPowerOfTwo(alignment));
+    const alignment: usize = direct.alignment.memory;
+    try testing.expect(direct.alignment.offset > 1 and alignment >= direct.alignment.offset);
     const storage = try testing.allocator.alloc(u8, alignment * 3);
     defer testing.allocator.free(storage);
     const start = std.mem.alignForward(usize, @intFromPtr(storage.ptr), alignment) - @intFromPtr(storage.ptr);
@@ -618,39 +608,38 @@ test "windows direct filesystem native and isolated worker transfers enforce sec
         for (buffer) |byte| try testing.expectEqual(0x5a, byte);
     }
 
-    inline for (.{ fs.ReadAt, fs.WriteAt, fs.worker.ReadAt, fs.worker.WriteAt }) |C| {
-        for ([_]bool{ false, true }) |offset| {
-            var invalid: co.Frame(C) = .{
-                .coroutine = .init(&pool, .{
-                    .file = file,
-                    .buffer = if (offset) buffer else buffer[0 .. buffer.len - 1],
-                    .offset = if (offset) 1 else 0,
-                }),
-            };
+    var write: co.Frame(fs.WriteAt) = .{ .coroutine = try direct.writeAt(&pool, buffer, 0) };
 
-            finish(&loop, &invalid);
+    finish(&loop, &write);
 
-            try testing.expectError(error.InvalidArgument, invalid.getResult());
-        }
-    }
+    try testing.expectEqual(buffer.len, try write.getResult());
 
-    var open: co.Frame(fs.Open) = .{
-        .coroutine = .init(&pool, .{
-            .dir = tmp.dir,
-            .path = "direct",
-            .direct = true,
-        }),
+    @memset(buffer, 0);
+    var read: co.Frame(fs.ReadAt) = .{ .coroutine = try direct.readAt(&pool, buffer, 0) };
+
+    finish(&loop, &read);
+
+    try testing.expectEqual(buffer.len, try read.getResult());
+    for (buffer) |byte| try testing.expectEqual(0x5a, byte);
+
+    try testing.expectError(error.InvalidArgument, direct.readAt(&pool, storage[start + 1 ..][0..alignment], 0));
+    try testing.expectError(error.InvalidArgument, direct.writeAt(&pool, buffer[0 .. buffer.len - 1], 0));
+    try testing.expectError(error.InvalidArgument, direct.readAt(&pool, buffer, 1));
+
+    var open: co.Frame(fs.OpenDirect) = .{
+        .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "direct" }),
     };
 
     finish(&loop, &open);
 
     const reopened = try open.getResult();
-    defer reopened.close(testing.io);
+    defer reopened.file.close(testing.io);
 
-    try testing.expect(reopened.flags.nonblocking);
+    try testing.expect(reopened.file.flags.nonblocking);
+    try testing.expectEqual(direct.alignment, reopened.alignment);
 
     open = .{
-        .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = ".", .direct = true }),
+        .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "." }),
     };
 
     finish(&loop, &open);
@@ -662,7 +651,6 @@ test "windows direct filesystem native and isolated worker transfers enforce sec
             .dir = tmp.dir,
             .path = "locked direct",
             .flags = .{ .lock = .exclusive },
-            .direct = true,
         }),
     };
 

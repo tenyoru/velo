@@ -121,8 +121,11 @@ stackful fibers), so coroutines here are explicit state machines.
   `worker` exposes explicitly worker-backed operations
 - `src/fs/native.zig`: native file wrappers over shared `event.Operation`, filesystem errno mapping
 - `src/fs/worker.zig`: worker-backed file implementation using `workers.Pool.Work`,
-  exposed through `velo.fs.worker`; Open/Create `direct`, positional Linux errno
+  exposed through `velo.fs.worker`; OpenDirect/CreateDirect, positional Linux errno
   handling, and grow-only `Allocate` (native platform reservation, no zero-fill emulation)
+- `src/fs/DirectFile.zig`: direct file with its OS-reported alignment; readAt/writeAt
+  reject misaligned requests before submission, `fallback` only applies when alignment
+  is unknown
 - `src/fs/linux.zig`, `macos.zig`: platform syscall helpers for direct I/O,
   positional transfers, data-only sync, and allocation; Darwin ABI definitions
 - `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
@@ -250,6 +253,11 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [fallocate](https://man7.org/linux/man-pages/man2/fallocate.2.html): reserve/grow semantics;
   [Windows buffering](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering):
   logical-sector lengths/offsets and physical-sector buffer alignment.
+  [statx](https://man7.org/linux/man-pages/man2/statx.2.html) `STATX_DIOALIGN` and
+  [FILE_STORAGE_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_storage_info)
+  report them. Never submit misaligned direct memory, even in tests: on GitHub's Azure
+  runners, Linux 7.0 hv_storvsc retried such a read forever in unkillable D state,
+  while NVMe runners completed the same test (checked 2026-10-31).
 - **Kernel copies:** [copy_file_range](https://man7.org/linux/man-pages/man2/copy_file_range.2.html),
   [sendfile](https://man7.org/linux/man-pages/man2/sendfile.2.html),
   [splice](https://man7.org/linux/man-pages/man2/splice.2.html): short progress, explicit offsets,

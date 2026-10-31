@@ -478,21 +478,21 @@ fn directRoundtrip(loop: *io.Loop) !void {
     try pool.init(testing.allocator, loop, 1);
     defer pool.deinit();
 
-    var create: co.Frame(fs.Create) = .{
+    var create: co.Frame(fs.CreateDirect) = .{
         .coroutine = .init(&pool, .{
             .dir = tmp.dir,
             .path = "direct",
             .flags = .{ .read = true },
-            .direct = true,
         }),
     };
 
     finish(loop, &create);
 
-    const file = create.getResult() catch |err| switch (err) {
+    const direct = create.getResult() catch |err| switch (err) {
         error.InvalidArgument, error.UnsupportedOperation => return error.SkipZigTest,
         else => return err,
     };
+    const file = direct.file;
     defer file.close(testing.io);
     const flags = linux.fcntl(file.handle, linux.F.GETFL, 0);
     try testing.expectEqual(linux.E.SUCCESS, linux.errno(flags));
@@ -501,12 +501,12 @@ fn directRoundtrip(loop: *io.Loop) !void {
 
     var stat: linux.Statx = undefined;
     const rc = linux.statx(file.handle, "", linux.AT.EMPTY_PATH, .{ .DIOALIGN = true }, &stat);
-    if (linux.errno(rc) == .NOSYS or linux.errno(rc) == .INVAL) return error.SkipZigTest;
     try testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
-    if (!stat.mask.DIOALIGN or stat.dio_mem_align == 0 or stat.dio_offset_align <= 1)
-        return error.SkipZigTest;
+    try testing.expectEqual(stat.dio_mem_align, direct.alignment.memory);
+    try testing.expectEqual(stat.dio_offset_align, direct.alignment.offset);
+    if (direct.alignment.offset <= 1) return error.SkipZigTest;
 
-    const alignment: usize = @max(stat.dio_mem_align, stat.dio_offset_align);
+    const alignment: usize = @max(direct.alignment.memory, direct.alignment.offset);
     try testing.expect(std.math.isPowerOfTwo(alignment));
     const storage = try testing.allocator.alloc(u8, alignment * 3);
     defer testing.allocator.free(storage);
@@ -536,78 +536,44 @@ fn directRoundtrip(loop: *io.Loop) !void {
         for (buffer) |byte| try testing.expectEqual(0x5a, byte);
     }
 
-    // O_DIRECT may reject misalignment or fall back to buffered I/O. Misaligned memory
-    // stays untested: Hyper-V storvsc retries it forever in an unkillable read.
-    inline for (.{ fs.ReadAt, fs.worker.ReadAt, fs.WriteAt, fs.worker.WriteAt }) |C| {
-        const is_read = C == fs.ReadAt or C == fs.worker.ReadAt;
-        if (!is_read) try file.setLength(testing.io, alignment + 1);
+    var write: co.Frame(fs.WriteAt) = .{ .coroutine = try direct.writeAt(&pool, buffer, 0) };
 
-        for (0..2) |case| {
-            const misaligned = if (case == 0) buffer[0 .. buffer.len - 1] else buffer;
-            const offset: usize = case;
-            @memset(misaligned, 0);
-            const raw = while (true) {
-                const result = if (is_read)
-                    linux.pread(file.handle, misaligned.ptr, misaligned.len, @intCast(offset))
-                else
-                    linux.pwrite(file.handle, misaligned.ptr, misaligned.len, @intCast(offset));
-                if (linux.errno(result) == .INTR) continue;
-                break result;
-            };
-            @memset(misaligned, if (is_read) 0 else 0xa5);
-            var frame: co.Frame(C) = .{
-                .coroutine = .init(&pool, .{
-                    .file = file,
-                    .buffer = misaligned,
-                    .offset = offset,
-                }),
-            };
+    finish(loop, &write);
 
-            finish(loop, &frame);
+    try testing.expectEqual(buffer.len, try write.getResult());
 
-            switch (linux.errno(raw)) {
-                .INVAL => try testing.expectError(error.InvalidArgument, frame.getResult()),
-                .IO => try testing.expectError(error.InputOutput, frame.getResult()),
-                .SUCCESS => {
-                    try testing.expectEqual(raw, try frame.getResult());
-                    if (is_read) {
-                        try testing.expectEqual(@min(misaligned.len, alignment - offset), raw);
-                        for (misaligned[0..raw]) |byte| try testing.expectEqual(0x5a, byte);
-                    } else {
-                        try testing.expectEqual(misaligned.len, raw);
-                        const written = storage[start..][0 .. alignment * 2];
-                        @memset(written, 0);
-                        try testing.expectEqual(alignment + 1, try file.readPositional(testing.io, &.{written}, 0));
-                        for (written[offset..][0..raw]) |byte| try testing.expectEqual(0xa5, byte);
-                    }
-                },
-                else => |err| try testing.expectEqual(linux.E.SUCCESS, err),
-            }
-        }
-    }
+    @memset(buffer, 0);
+    var read: co.Frame(fs.ReadAt) = .{ .coroutine = try direct.readAt(&pool, buffer, 0) };
 
-    var open: co.Frame(fs.Open) = .{
-        .coroutine = .init(&pool, .{
-            .dir = tmp.dir,
-            .path = "direct",
-            .direct = true,
-        }),
+    finish(loop, &read);
+
+    try testing.expectEqual(buffer.len, try read.getResult());
+    for (buffer) |byte| try testing.expectEqual(0x5a, byte);
+
+    if (direct.alignment.memory > 1)
+        try testing.expectError(error.InvalidArgument, direct.readAt(&pool, storage[start + 1 ..][0..alignment], 0));
+    try testing.expectError(error.InvalidArgument, direct.writeAt(&pool, buffer[0 .. buffer.len - 1], 0));
+    try testing.expectError(error.InvalidArgument, direct.readAt(&pool, buffer, 1));
+
+    var open: co.Frame(fs.OpenDirect) = .{
+        .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "direct" }),
     };
 
     finish(loop, &open);
 
     const reopened = try open.getResult();
-    defer reopened.close(testing.io);
-    const reopened_flags: linux.O = @bitCast(@as(u32, @intCast(linux.fcntl(reopened.handle, linux.F.GETFL, 0))));
+    defer reopened.file.close(testing.io);
+    const reopened_flags: linux.O = @bitCast(@as(u32, @intCast(linux.fcntl(reopened.file.handle, linux.F.GETFL, 0))));
     try testing.expect(reopened_flags.DIRECT);
+    try testing.expectEqual(direct.alignment, reopened.alignment);
 
-    create = .{
+    var create_buffered: co.Frame(fs.Create) = .{
         .coroutine = .init(&pool, .{ .dir = tmp.dir, .path = "buffered" }),
     };
 
-    finish(loop, &create);
+    finish(loop, &create_buffered);
 
-    const buffered = try create.getResult();
+    const buffered = try create_buffered.getResult();
     defer buffered.close(testing.io);
     const buffered_flags: linux.O = @bitCast(@as(u32, @intCast(linux.fcntl(buffered.handle, linux.F.GETFL, 0))));
     try testing.expect(!buffered_flags.DIRECT);
@@ -619,7 +585,7 @@ test "filesystem Linux unsupported direct setup reports unsupported operation" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
     var pool: WorkerPool = undefined;
-    var open: fs.Open = .init(&pool, .{ .dir = .cwd(), .path = "/dev/null", .direct = true });
+    var open: fs.OpenDirect = .init(&pool, .{ .dir = .cwd(), .path = "/dev/null" });
 
     try testing.expectError(error.UnsupportedOperation, open.action.run(testing.io));
 }

@@ -275,12 +275,45 @@ test "filesystem failed direct setup closes the opened handle" {
     vtable.fileClose = Fake.close;
     const fake_io: std.Io = .{ .vtable = &vtable, .userdata = &count };
     var pool: WorkerPool = undefined;
-    var open: fs.Open = .init(&pool, .{ .dir = .cwd(), .path = "ignored", .direct = true });
-    var create: fs.Create = .init(&pool, .{ .dir = .cwd(), .path = "ignored", .direct = true });
+    var open: fs.OpenDirect = .init(&pool, .{ .dir = .cwd(), .path = "ignored" });
+    var create: fs.CreateDirect = .init(&pool, .{ .dir = .cwd(), .path = "ignored" });
 
     try testing.expectError(error.BadFileDescriptor, open.action.run(fake_io));
     try testing.expectError(error.BadFileDescriptor, create.action.run(fake_io));
     try testing.expectEqual(2, count);
+}
+
+test "filesystem DirectFile rejects misalignment before submission" {
+    const direct: fs.DirectFile = .{
+        .file = undefined,
+        .alignment = .{ .memory = 8, .offset = 512 },
+    };
+    var storage: [1024]u8 align(512) = undefined;
+
+    try direct.check(&storage, 1024);
+    try direct.check(storage[0..512], 512);
+    try direct.check(storage[1..1], 0);
+    try testing.expectError(error.InvalidArgument, direct.check(storage[1..513], 0));
+    try testing.expectError(error.InvalidArgument, direct.check(storage[0..511], 0));
+    try testing.expectError(error.InvalidArgument, direct.check(storage[0..512], 1));
+
+    // An undefined pool proves rejection happens before any operation exists.
+    var pool: WorkerPool = undefined;
+    try testing.expectError(error.InvalidArgument, direct.readAt(&pool, storage[1..513], 0));
+    try testing.expectError(error.InvalidArgument, direct.writeAt(&pool, storage[1..513], 0));
+}
+
+test "filesystem DirectFile fallback cannot weaken reported alignment" {
+    const reported: fs.DirectFile.Alignment = .{ .memory = 4, .offset = 4096 };
+    const fallback: fs.DirectFile.Alignment = .{ .memory = 512, .offset = 512 };
+
+    try testing.expectEqual(reported, fs.DirectFile.resolve(reported, null));
+    try testing.expectEqual(reported, fs.DirectFile.resolve(reported, fallback));
+    try testing.expectEqual(fallback, fs.DirectFile.resolve(null, fallback));
+    try testing.expectEqual(fallback, fs.DirectFile.resolve(.{ .memory = 0, .offset = 0 }, fallback));
+    try testing.expectError(error.UnsupportedOperation, fs.DirectFile.resolve(null, null));
+    try testing.expectError(error.UnsupportedOperation, fs.DirectFile.resolve(.{ .memory = 0, .offset = 512 }, null));
+    try testing.expectError(error.InvalidArgument, fs.DirectFile.resolve(reported, .{ .memory = 3, .offset = 512 }));
 }
 
 test "filesystem Allocate reserves grows preserves data and never shrinks" {

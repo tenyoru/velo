@@ -20,6 +20,15 @@ pub const FileStorageInfo = 16;
 
 pub const FILE_STANDARD_INFO = std.os.windows.FILE.STANDARD_INFORMATION;
 pub const FILE_ATTRIBUTE_TAG_INFO = std.os.windows.FILE.ATTRIBUTE_TAG_INFO;
+pub const FILE_STORAGE_INFO = extern struct {
+    logical: u32,
+    physical_atomic: u32,
+    physical_performance: u32,
+    effective_atomic: u32,
+    flags: u32,
+    sector_offset: u32,
+    partition_offset: u32,
+};
 
 pub const OVERLAPPED = extern struct {
     internal: usize = 0,

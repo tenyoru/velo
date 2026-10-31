@@ -2,6 +2,7 @@ const std = @import("std");
 
 const io = @import("../event/root.zig");
 const w = @import("../event/backends/win32.zig");
+const Alignment = @import("DirectFile.zig").Alignment;
 
 pub fn upgrade(
     threaded: std.Io,
@@ -46,6 +47,28 @@ pub fn upgrade(
     return .{
         .handle = handle,
         .flags = .{ .nonblocking = true },
+    };
+}
+
+/// Lengths and offsets follow logical sectors; buffers follow the largest physical sector.
+pub fn directAlignment(file: std.Io.File) ?Alignment {
+    var info: w.FILE_STORAGE_INFO = undefined;
+    if (w.GetFileInformationByHandleEx(
+        file.handle,
+        w.FileStorageInfo,
+        &info,
+        @sizeOf(w.FILE_STORAGE_INFO),
+    ) == 0)
+        return null;
+
+    return .{
+        .memory = @max(
+            info.logical,
+            info.physical_atomic,
+            info.physical_performance,
+            info.effective_atomic,
+        ),
+        .offset = info.logical,
     };
 }
 

@@ -12,16 +12,16 @@
 //! supplied synchronous handles use workers. Associated handles stay on one loop.
 //! Use these transfer wrappers on IOCP-associated files, not std.Io.Threaded's APC path.
 //! Submitted Darwin AIO drains to its original completion even after cancellation.
-//! Open/Create `direct` defaults to false: Linux enables O_DIRECT, Windows requests
+//! OpenDirect/CreateDirect return a DirectFile: Linux enables O_DIRECT, Windows requests
 //! FILE_FLAG_NO_BUFFERING, and macOS uses the weaker F_NOCACHE cache hint, not O_DIRECT.
-//! Requested direct setup never silently falls back; Windows locks/path-only opens
-//! and nonregular handles are unsupported. Direct does not imply durability.
-//! Callers must discover the file/device's buffer, length and offset constraints:
-//! Linux statx(STATX_DIOALIGN), when supported, or filesystem/device documentation;
-//! Windows volume logical-sector multiples for lengths/offsets and physical-sector
-//! buffer alignment (IOCTL_STORAGE_QUERY_PROPERTY). 4096 is not a universal guarantee.
-//! Linux filesystems may reject misalignment or fall back to buffered I/O themselves;
-//! misaligned memory can also block forever in the kernel (Hyper-V storvsc retries it).
+//! Direct setup never silently falls back; Windows locks/path-only opens and nonregular
+//! handles are unsupported. Failed CreateDirect setup can leave the created file behind.
+//! Direct does not imply durability.
+//! Alignment comes from Linux statx(STATX_DIOALIGN) or Windows FILE_STORAGE_INFO. When
+//! the OS reports none, setup uses the caller's `fallback` or fails with
+//! UnsupportedOperation; 4096 is not a universal guarantee.
+//! DirectFile transfers reject misalignment before submission: misaligned memory can
+//! block forever in the kernel (Hyper-V storvsc retries it).
 //! Allocate reserves backing storage for [offset, offset+len) and grows EOF to at
 //! least offset+len without shrinking or overwriting data. It always uses workers;
 //! offset+len must fit i64; len=0 does no I/O after validation. No zero-write emulation.
@@ -41,6 +41,9 @@ pub const worker = @import("worker.zig");
 pub const File = worker.File;
 pub const Open = worker.Open;
 pub const Create = worker.Create;
+pub const OpenDirect = worker.OpenDirect;
+pub const CreateDirect = worker.CreateDirect;
+pub const DirectFile = @import("DirectFile.zig");
 pub const Close = worker.Close;
 pub const Allocate = worker.Allocate;
 pub const ReadAt = Dispatch("ReadAt", "read", usize);
