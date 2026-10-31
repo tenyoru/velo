@@ -30,6 +30,8 @@ pub const Stats = struct {
     /// Kernel wakes requested by posts and stops; `posts - wakes` were cheap.
     /// A bare release goes uncounted: it must not write to the loop after dropping it.
     wakes: u64 = 0,
+    /// Safe builds only: timing each poll is too costly elsewhere.
+    longest_poll_ns: u64 = 0,
 };
 
 /// Type-erased coroutine handle borrowed by wakers.
@@ -117,6 +119,12 @@ pub fn run(ex: *Executor) void {
     defer if (ThreadGuard.enabled) ex.thread_guard.leave(entered);
 
     while (ex.runOne()) {}
+}
+
+/// The task `runOne` would poll next.
+pub fn peek(ex: *Executor) ?*Task {
+    const node = ex.ready.first orelse return null;
+    return @alignCast(@fieldParentPtr("node", node));
 }
 
 pub fn runOne(ex: *Executor) bool {

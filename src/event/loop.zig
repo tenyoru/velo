@@ -8,9 +8,17 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const event = @import("root.zig");
 const Control = @import("Control.zig");
 const Executor = @import("../coroutines/Executor.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
+
+/// Safe builds report polls this long, like Seastar's stall detector.
+const stall_ns = 25 * std.time.ns_per_ms;
+
+fn nanoseconds(time: event.Timespec) u64 {
+    return @as(u64, @intCast(time.sec)) * std.time.ns_per_s + @as(u64, @intCast(time.nsec));
+}
 
 pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
     comptime {
@@ -39,7 +47,7 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
                 if (loop.control.service(&loop.executor)) return;
 
                 var budget: usize = 64;
-                while (budget > 0 and loop.executor.runOne()) : (budget -= 1) {}
+                while (budget > 0 and try poll(loop)) : (budget -= 1) {}
 
                 if (try hooks.turn(loop)) continue;
                 // A queued send may be what completes an already-submitted receive.
@@ -53,6 +61,23 @@ pub fn Shared(comptime Loop: type, comptime hooks: anytype) type {
 
                 try park(loop);
             }
+        }
+
+        fn poll(loop: *Loop) !bool {
+            if (!Executor.named) return loop.executor.runOne();
+
+            const task = loop.executor.peek() orelse return false;
+            const name = task.getName();
+            const started = nanoseconds(try event.now());
+            _ = loop.executor.runOne();
+            const elapsed = nanoseconds(try event.now()) - started;
+
+            const counters = &loop.executor.stats;
+            if (elapsed <= counters.longest_poll_ns) return true;
+            counters.longest_poll_ns = elapsed;
+            if (elapsed >= stall_ns)
+                std.debug.print("velo: task {s} held its loop for {d} ms\n", .{ name, elapsed / std.time.ns_per_ms });
+            return true;
         }
 
         fn park(loop: *Loop) !void {
