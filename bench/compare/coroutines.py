@@ -148,12 +148,17 @@ async def measure(name, c):
         row.pop("phase")
         row.update(type="run", implementation=name, workload=c.workload, validated=True,
                    config={k: getattr(c, k) for k in FIELDS}, cpu=c.cpu,
-                   operations_per_second=row["operations"] * 1e9 / row["elapsed_ns"],
-                   cpu_ns_per_operation=row["cpu_ns"] / row["operations"],
                    rss_baseline_bytes=baseline["rss_bytes"], rss_ready_bytes=parked["rss_bytes"],
                    rss_delta_bytes=delta, rss_delta_bytes_per_task=delta / c.tasks,
-                   peak_rss_at_ready_bytes=parked["peak_rss_bytes"], threads_at_ready=parked["threads"],
-                   short_sample=row["elapsed_ns"] < 10000000)
+                   peak_rss_at_ready_bytes=parked["peak_rss_bytes"], threads_at_ready=parked["threads"])
+        if c.workload == "parked":
+            # Sparse wakes validate liveness; their short interval cannot rank speed reliably.
+            row.pop("elapsed_ns")
+            row.pop("cpu_ns")
+        else:
+            row.update(operations_per_second=row["operations"] * 1e9 / row["elapsed_ns"],
+                       cpu_ns_per_operation=row["cpu_ns"] / row["operations"],
+                       short_sample=row["elapsed_ns"] < 10000000)
         return row
     finally:
         if process is not None:
@@ -172,8 +177,12 @@ async def run(c):
             echo.emit(row)
             results[name].append(row)
     for name, rows in results.items():
-        summary = {"type": "summary", "implementation": name, "workload": c.workload, "runs": len(rows), "short_samples": sum(r["short_sample"] for r in rows)}
-        for key in ("operations_per_second", "cpu_ns_per_operation", "rss_delta_bytes_per_task", "rss_ready_bytes", "setup_ns", "drain_ns"):
+        summary = {"type": "summary", "implementation": name, "workload": c.workload, "runs": len(rows)}
+        metrics = ["rss_delta_bytes_per_task", "rss_ready_bytes", "setup_ns", "drain_ns"]
+        if c.workload != "parked":
+            summary["short_samples"] = sum(r["short_sample"] for r in rows)
+            metrics += ["operations_per_second", "cpu_ns_per_operation"]
+        for key in metrics:
             values = [r[key] for r in rows]
             summary[key] = dict(median=statistics.median(values), min=min(values), max=max(values))
         echo.emit(summary)
@@ -187,7 +196,7 @@ def main():
         if name in c.implementations:
             versions[name] = echo.capture(*cmd)
     paths = echo.capture("git", "ls-files", "--cached", "--others", "--exclude-standard").splitlines()
-    echo.emit(dict(type="metadata", schema=1, suite="coroutines", config=vars(c),
+    echo.emit(dict(type="metadata", schema=2, suite="coroutines", config=vars(c),
                    platform=platform.platform(), versions=versions, build_commands=commands,
                    compiler_environment={key: os.environ.get(key) for key in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "GOAMD64", "GOARM64", "GOEXPERIMENT", "CGO_ENABLED")},
                    git_commit=echo.capture("git", "rev-parse", "HEAD"),

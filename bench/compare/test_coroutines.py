@@ -25,15 +25,23 @@ class CoroutineTests(unittest.IsolatedAsyncioTestCase):
         for args in cases:
             if args[1] == "pipeline":
                 args += ["--iterations", "37", "--warmup", "3"]
-            c = bench.options(args)
             for name in bench.COMMANDS:
                 with self.subTest(args=args, implementation=name):
-                    row = await bench.measure(name, c)
+                    c = bench.options(args + ["--implementations", name, "--repetitions", "1"])
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        await bench.run(c)
+                    row, summary = [json.loads(line) for line in output.getvalue().splitlines()]
                     self.assertTrue(row["validated"])
                     self.assertEqual(row["completed"], c.tasks)
                     self.assertGreater(row["rss_ready_bytes"], 0)
                     self.assertGreaterEqual(row["threads_at_ready"], 1)
                     self.assertEqual(row["cpu"], c.cpu)
+                    self.assertEqual(summary["runs"], 1)
+                    self.assertEqual(summary["rss_ready_bytes"]["median"], row["rss_ready_bytes"])
+                    for key in ("elapsed_ns", "cpu_ns", "operations_per_second", "cpu_ns_per_operation", "short_sample"):
+                        self.assertEqual(key in row, c.workload != "parked", key)
+                    for key in ("operations_per_second", "cpu_ns_per_operation", "short_samples"):
+                        self.assertEqual(key in summary, c.workload != "parked", key)
 
     def test_checksum_oracle_uses_the_full_pipeline(self):
         c = bench.options(["--workload", "pipeline", "--tasks", "5", "--work", "7", "--iterations", "19"])

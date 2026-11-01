@@ -106,7 +106,7 @@ compiler with `GOTOOLCHAIN=local` rather than downloading a compiler.
 |---|---|---|
 | `handoff` | `tasks` workers pass one u64 token around capacity-one channels for `iterations` laps; every receiver checks the token sequence. The final hop terminates without sending another token. | CPU ns/hop and hops/s; `operations = tasks * iterations` |
 | `pipeline` | `tasks` includes one producer, intermediate workers and one sink; `tasks - 1` bounded channels. Each intermediate worker applies `work` wrapping-u64 multiply/add steps per item. The sink checks every value in order. | CPU ns/item and items/s; `operations = iterations` |
-| `parked` | Each task waits on its own capacity-one channel with `payload` bytes of live data. Wake `active` evenly spaced tasks one at a time and await their completion; then wake/drain the remainder outside the measured interval. All payload checksums are checked. | Ready RSS, incremental RSS/task, sparse-wake time and remaining drain time |
+| `parked` | Each task waits on its own capacity-one channel with `payload` bytes of live data. After the RSS snapshot, wake `active` evenly spaced tasks one at a time and await their completion; then wake/drain the remainder. All payload checksums are checked. | Ready RSS and incremental RSS/task; setup/drain durations for context |
 
 For `parked`, target `i` is `floor(i * tasks / active)`; keep `active` fixed when
 varying the parked population. The payload is a shared slab with a disjoint,
@@ -140,12 +140,15 @@ The runner checks each result against an independent checksum/count oracle,
 requires successful exit with no extra output, and kills/reaps children on timeout
 or protocol failure. The default is five fresh processes per implementation in
 seeded shuffled order. Metadata includes configuration, compiler versions,
-Git state, source/binary hashes and build commands. Each run includes native
-wall/process CPU time, baseline/ready/peak-at-ready RSS, thread count, and
-validation status; summaries retain median/min/max values. CPU uses the process
-clock in Zig/Rust and microsecond-resolution `getrusage` in Go. Samples shorter
-than 10 ms carry `short_sample: true`; increase iterations for throughput/CPU
-claims. Sparse wake timings are often short by design. No per-hop latency
+Git state, source/binary hashes and build commands. Each run includes
+baseline/ready/peak-at-ready RSS, thread count, and validation status; summaries
+retain median/min/max values. Handoff and pipeline also report native wall/process
+CPU time. CPU uses the process clock in Zig/Rust and microsecond-resolution
+`getrusage` in Go. Samples shorter than 10 ms carry `short_sample: true`; increase
+iterations for throughput/CPU claims. In output schema 2, parked runs and summaries
+omit sparse-wake wall/CPU time, throughput, CPU per wake, and short-sample flags:
+the native interval is too short to rank reliably. Sparse wakes still validate
+liveness and checksums. No per-hop latency
 percentiles are claimed: clocking every handoff would distort it. These results
 exclude event-loop/backend costs and do not establish application/server speed.
 
