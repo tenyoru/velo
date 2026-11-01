@@ -61,7 +61,8 @@ pub fn Channel(comptime T: type) type {
             assert(self.count < self.buffer.len);
 
             self.buffer[self.tail] = value;
-            self.tail = (self.tail + 1) % self.buffer.len;
+            self.tail += 1;
+            if (self.tail == self.buffer.len) self.tail = 0;
             self.count += 1;
         }
 
@@ -72,7 +73,7 @@ pub fn Channel(comptime T: type) type {
             task: ?*co.Task = null,
             state: states.Channel = .idle,
 
-            pub fn poll(self: *Send, task: *co.Task) co.Poll(Error!void) {
+            pub inline fn poll(self: *Send, task: *co.Task) co.Poll(Error!void) {
                 if (self.task) |borrowed| assert(borrowed == task);
                 if (task.cancel_requested) self.cancel();
 
@@ -102,8 +103,8 @@ pub fn Channel(comptime T: type) type {
                         }
                     },
                     .waiting => return .pending,
-                    .granted, .canceled, .closed => {},
                     .done => unreachable,
+                    else => {},
                 }
 
                 if (self.task != null) task.outstanding_io -= 1;
@@ -127,7 +128,7 @@ pub fn Channel(comptime T: type) type {
                         self.state = .canceled;
                         self.task.?.wake();
                     },
-                    .granted, .canceled, .closed, .done => {},
+                    else => {},
                 }
             }
         };
@@ -139,7 +140,7 @@ pub fn Channel(comptime T: type) type {
             task: ?*co.Task = null,
             state: states.Channel = .idle,
 
-            pub fn poll(self: *Recv, task: *co.Task) co.Poll(Error!T) {
+            pub inline fn poll(self: *Recv, task: *co.Task) co.Poll(Error!T) {
                 if (self.task) |borrowed| assert(borrowed == task);
                 if (task.cancel_requested) self.cancel();
 
@@ -149,7 +150,8 @@ pub fn Channel(comptime T: type) type {
 
                         if (channel.count != 0) {
                             self.value = channel.buffer[channel.head];
-                            channel.head = (channel.head + 1) % channel.buffer.len;
+                            channel.head += 1;
+                            if (channel.head == channel.buffer.len) channel.head = 0;
                             channel.count -= 1;
                             self.state = .granted;
 
@@ -179,8 +181,8 @@ pub fn Channel(comptime T: type) type {
                         }
                     },
                     .waiting => return .pending,
-                    .granted, .canceled, .closed => {},
                     .done => unreachable,
+                    else => {},
                 }
 
                 if (self.task != null) task.outstanding_io -= 1;
@@ -204,7 +206,7 @@ pub fn Channel(comptime T: type) type {
                         self.state = .canceled;
                         self.task.?.wake();
                     },
-                    .granted, .canceled, .closed, .done => {},
+                    else => {},
                 }
             }
         };
