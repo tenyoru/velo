@@ -24,3 +24,9 @@ bench-coroutines *args:
 
 bench-coroutines-check:
     python3 bench/compare/test_coroutines.py
+
+bench-balance *args:
+    python3 bench/compare/balance.py {{args}}
+
+bench-balance-check:
+    python3 bench/compare/test_balance.py

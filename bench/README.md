@@ -158,3 +158,49 @@ checks `compare/test_coroutines.py`. `just bench-coroutines-check` covers all
 implementations, queue capacities, sparse/all wakes, checksums and runner failure
 cleanup. The Zig test also runs under ordinary `just test`; foreign targets
 compile it but skip the Linux-only execution test.
+
+## Shard balance (64-bit Linux)
+
+```sh
+nix develop .#bench -c just bench-balance-check
+nix develop .#bench -c just bench-balance --cores 1 2 4 --repetitions 5 > balance.jsonl
+```
+
+This Velo-only experiment measures how explicit placement affects CPU utilization.
+It runs the same finite batch of independent computations with three placements:
+
+- `balanced/local`: equal query ownership across loops, computing on each owner.
+- `skewed/local`: 90% of queries belong to loop 0; computation stays on the owner.
+- `skewed/spread`: the same skewed ownership, but computation is distributed round
+  robin. Each result is posted back to its owner for the accumulator update.
+
+Each query starts with a unique u64 and performs `--rounds` wrapping multiply/add
+operations. It yields after every 1024 rounds. Only the owner updates its accumulator;
+per-job results, exactly-once commits, executing threads, per-shard counts and sums
+are checked. The Python runner also uses an independent affine-composition oracle.
+This represents distributable computation followed by a short, order-independent
+update. It does not model a computation that must hold exclusive access to mutable
+shard state, nor an ordered transaction or expensive serialized commit.
+
+`--jobs` defaults to 4096 and `--rounds` to 262144. All jobs are admitted as one batch;
+the measured interval includes dispatch, cooperative polling, result posts and owner
+updates. Construction and a 100,000-round computation warmup on every loop are outside
+the interval. The event backend is forced epoll, with no disk/network I/O or idle spin.
+The runner selects distinct physical cores and applies process affinity before exec;
+each loop pins to one selected CPU and verifies its affinity. Override the available
+selection with `--cpus 2 4 6 8`, using CPU IDs allowed on your machine.
+
+JSON Lines retain raw runs, metadata and median/min/max summaries. Report throughput,
+process CPU/query, each loop's CPU time and computed/committed counts, and
+`active_cores` (sum of loop CPU time divided by elapsed time). Loop CPU clocks span
+the pre-dispatch barrier through post-completion snapshots, so that last metric is
+an approximation with small control overhead. Completion p50/p99 measure time from
+batch release to an owner applying a result, including queueing; they are **not**
+steady-state request latency under an external arrival rate. Samples shorter than
+10 ms are flagged. Each repetition shuffles all core-count/placement combinations;
+the default per-process timeout is ten seconds.
+
+The spread case measures the benefit and cost of deliberate compute placement; it
+does not add work stealing, rebalance running tasks, or automatically identify safe
+work to move. Seastar, Tokio and Go are not part of this experiment. Sources:
+`balance.zig`, `compare/balance.py`, `compare/test_balance.py`.

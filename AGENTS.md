@@ -29,6 +29,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `zig build bench -Doptimize=ReleaseFast`: install `zig-out/bin/scalability`, `numa`, `echo-velo`, and `crossloop`
 - `nix develop .#bench -c just bench-compare [args]`: Linux velo/libuv/Tokio TCP echo comparison; JSON Lines output
 - `nix develop .#bench -c just bench-check`: comparison integration and runner failure-path tests
+- `nix develop .#bench -c just bench-balance [--cores 1 2 4]`: CPU query placement with balanced/skewed owners and explicit compute distribution; `bench-balance-check` validates the runner
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
 - `zig build run-crossloop -Doptimize=ReleaseFast -- <auto|uring|epoll> <ping-pong|busy|paced> <messages> [loops=N] [rate=N] [work=N] [spin=NS] [pinned]`: cross-loop post cost, CPU and latency
 - `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
@@ -180,6 +181,9 @@ stackful fibers), so coroutines here are explicit state machines.
   `workers.Group`; CPU per message, latency percentiles and `Loop.stats`
 - `bench/coroutines.zig`: Linux in-memory handoff, bounded pipeline and parked-task
   workloads; native timing and baseline/ready barriers for the Go/Tokio comparison
+- `bench/balance.zig`, `bench/compare/balance.py`: Linux multi-loop CPU query placement;
+  balanced/skewed ownership, local/spread computation, owner-only accumulators,
+  per-loop CPU, batch completion times and shuffled physical-core sweeps
 - `bench/compare/coroutines.py`, `coroutines.go`, `tokio/src/coroutines.rs`: single-CPU
   coroutine comparison with checksums, RSS snapshots and shuffled runs;
   `test_coroutines.py` covers equivalent workloads and runner failure cleanup
