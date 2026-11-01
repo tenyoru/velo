@@ -692,7 +692,10 @@ test "iocp wake packets dispatch cross-thread posts only on the loop thread" {
     defer loop.deinit();
 
     var probe: Probe = .{ .loop = &loop, .thread_id = std.Thread.getCurrentId() };
+    // Only a parked loop gets a wake packet.
+    try std.testing.expect(loop.control.enterPark());
     loop.post(&probe.command);
+    loop.control.leavePark();
     try std.testing.expect(try loop.completion(0));
     try std.testing.expectEqual(0, probe.callbacks);
     try std.testing.expectEqual(0, loop.active);

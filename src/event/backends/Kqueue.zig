@@ -702,7 +702,10 @@ test "kqueue wakes defer callbacks to control service" {
 
     var probe: Probe = .{ .loop = &loop };
     loop.retain();
+    // Only a parked loop gets a wake event.
+    try std.testing.expect(loop.control.enterPark());
     loop.post(&probe.command);
+    loop.control.leavePark();
 
     try std.testing.expect(try loop.events(false));
     try std.testing.expectEqual(0, probe.calls);
