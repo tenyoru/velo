@@ -315,51 +315,178 @@ test "worker fixed concurrency drains many jobs with over-aligned actions and re
     try testing.expectEqual(0, pool.outstanding);
 }
 
-test "worker shutdown cancels queued jobs drains running results rejects new work and joins" {
-    for (support.modes) |mode| {
-        var loop = try support.initLoop(8, mode);
-        defer loop.deinit();
-        var pool: WorkerPool = undefined;
-        try pool.init(testing.allocator, &loop, 1);
-        defer pool.deinit();
+const OwnedJob = struct {
+    calls: *std.atomic.Value(usize),
+    owner: std.Thread.Id,
+    id: usize,
+    started: ?*std.Io.Event = null,
+    release: ?*std.Io.Event = null,
 
-        var started: std.Io.Event = .unset;
-        var release: std.Io.Event = .unset;
-        var calls: std.atomic.Value(usize) = .init(0);
-        const W = WorkerPool.Work(Gated);
-        var frames: [3]co.Frame(W) = undefined;
-        for (&frames, 0..) |*frame, i| frame.* = .{
-            .coroutine = W.init(&pool, .{
-                .started = &started,
-                .release = &release,
-                .calls = &calls,
-                .value = i,
-            }),
+    pub fn run(self: *@This(), std_io: std.Io) !*usize {
+        testing.expect(std.Thread.getCurrentId() != self.owner) catch @panic("work ran on the owning loop");
+        testing.expectEqual(0, self.calls.fetchAdd(1, .monotonic)) catch @panic("job ran more than once");
+        if (self.started) |started| started.set(std_io);
+        if (self.release) |release| release.waitUncancelable(std_io);
+        if (self.id % 11 == 0) return error.Injected;
+        const value = try testing.allocator.create(usize);
+        value.* = self.id;
+        return value;
+    }
+
+    fn consume(id: usize, calls: *std.atomic.Value(usize), result: anyerror!*usize) !void {
+        if (result) |value| {
+            defer testing.allocator.destroy(value);
+            try testing.expect(id % 11 != 0);
+            try testing.expectEqual(id, value.*);
+            try testing.expectEqual(1, calls.load(.acquire));
+        } else |err| switch (err) {
+            error.OperationCanceled => try testing.expectEqual(0, calls.load(.acquire)),
+            error.Injected => {
+                try testing.expectEqual(0, id % 11);
+                try testing.expectEqual(1, calls.load(.acquire));
+            },
+            else => return err,
+        }
+    }
+};
+
+test "worker reused storage preserves owned results under mixed cancellation" {
+    const Driver = struct {
+        const State = struct {
+            calls: [256]std.atomic.Value(usize) = @splat(.init(0)),
+            owner: std.Thread.Id,
+            completed: usize = 0,
         };
 
-        loop.executor.spawn(&frames[0].task);
-        loop.executor.spawn(&frames[1].task);
-        loop.executor.run();
-        started.waitUncancelable(pool.threaded.io());
+        pool: *WorkerPool,
+        state: *State,
+        id: usize,
+        stride: usize,
+        seed: usize,
+        work: WorkerPool.Work(OwnedJob) = undefined,
+        // Inspect a separate flag: checking an optional child can copy worker-owned storage.
+        active: bool = false,
+        repolls: usize = 0,
 
-        loop.control.shutdown();
-        _ = loop.control.service(&loop.executor);
-        loop.executor.spawn(&frames[2].task);
-        loop.executor.run();
-        release.set(pool.threaded.io());
-        support.run(&loop);
+        pub fn poll(self: *@This(), task: *co.Task) co.Poll(void) {
+            testing.expectEqual(self.state.owner, std.Thread.getCurrentId()) catch @panic("wrong completion thread");
+            if (self.id >= self.state.calls.len) return .{ .ready = {} };
+            const pattern = self.id + self.seed;
+            const calls = &self.state.calls[self.id];
+            if (!self.active) {
+                self.work = .init(self.pool, .{ .calls = calls, .owner = self.state.owner, .id = self.id });
+                self.active = true;
+                self.repolls = 0;
+                if (pattern % 7 == 0) self.work.cancel();
+            }
+            const result = switch (self.work.poll(task)) {
+                .pending => {
+                    if (pattern % 3 == 0) {
+                        self.work.cancel();
+                        self.work.cancel();
+                    }
+                    if (self.repolls < 2) {
+                        self.repolls += 1;
+                        task.wake();
+                    }
+                    return .pending;
+                },
+                .ready => |result| result,
+            };
+            OwnedJob.consume(self.id, calls, result) catch |err| @panic(@errorName(err));
+            self.work.deinit();
+            self.state.completed += 1;
+            self.active = false;
+            self.id += self.stride;
+            task.wake();
+            return .pending;
+        }
+    };
 
-        try testing.expectEqual(0, try frames[0].getResult());
-        try testing.expectError(error.OperationCanceled, frames[1].getResult());
-        try testing.expectError(error.OperationCanceled, frames[2].getResult());
-        try testing.expectEqual(1, calls.load(.acquire));
-        try testing.expect(!loop.control.hasWork());
-        try testing.expectEqual(null, loop.control.registrations.first);
+    for (support.modes) |mode| {
+        for ([_]usize{ 1, 4 }) |workers| {
+            var loop = try support.initLoop(8, mode);
+            defer loop.deinit();
+            var pool: WorkerPool = undefined;
+            try pool.init(testing.allocator, &loop, workers);
+            defer pool.deinit();
+            for (0..4) |seed| {
+                var state: Driver.State = .{ .owner = std.Thread.getCurrentId() };
+                var frames: [16]co.Frame(Driver) = undefined;
+                for (&frames, 0..) |*frame, id| {
+                    frame.* = .init(.{ .pool = &pool, .state = &state, .id = id, .stride = frames.len, .seed = seed });
+                    loop.spawn(frame);
+                }
+                support.run(&loop);
+                try testing.expectEqual(state.calls.len, state.completed);
+                for (&frames) |*frame| {
+                    try testing.expect(frame.result != null);
+                    try testing.expectEqual(0, frame.task.outstanding_io);
+                }
+                for (&state.calls, 0..) |*calls, id| {
+                    const pattern = id + seed;
+                    if (pattern % 7 == 0) {
+                        try testing.expectEqual(0, calls.load(.acquire));
+                    } else if (pattern % 3 != 0) {
+                        try testing.expectEqual(1, calls.load(.acquire));
+                    }
+                }
+                try testing.expectEqual(0, pool.outstanding);
+                try testing.expect(!loop.control.hasWork());
+                try testing.expectEqual(null, loop.control.registrations.first);
+                try testing.expectEqual(null, loop.executor.all_tasks.first);
+                try support.drained(&loop);
+            }
+        }
+    }
+}
 
-        for (&frames) |*frame| {
-            try testing.expectEqual(0, frame.task.outstanding_io);
+test "worker shutdown drains owned results from running workers and rejects queued and new work" {
+    for (support.modes) |mode| {
+        for ([_]usize{ 1, 4 }) |workers| {
+            var loop = try support.initLoop(8, mode);
+            defer loop.deinit();
+            var pool: WorkerPool = undefined;
+            try pool.init(testing.allocator, &loop, workers);
+            defer pool.deinit();
 
-            frame.coroutine.deinit();
+            var started: [4]std.Io.Event = @splat(.unset);
+            var release: std.Io.Event = .unset;
+            const count = workers + 16;
+            var calls: [21]std.atomic.Value(usize) = @splat(.init(0));
+            var frames: [21]co.Frame(WorkerPool.Work(OwnedJob)) = undefined;
+            for (frames[0 .. count + 1], 0..) |*frame, i| {
+                frame.* = .init(.init(&pool, .{
+                    .started = if (i < workers) &started[i] else null,
+                    .release = if (i < workers) &release else null,
+                    .calls = &calls[i],
+                    .owner = std.Thread.getCurrentId(),
+                    .id = i,
+                }));
+                if (i < count) loop.spawn(frame);
+            }
+            loop.executor.run();
+            for (started[0..workers]) |*ready| ready.waitUncancelable(pool.threaded.io());
+
+            loop.control.shutdown();
+            _ = loop.control.service(&loop.executor);
+            loop.spawn(&frames[count]);
+            loop.executor.run();
+            release.set(pool.threaded.io());
+            support.run(&loop);
+
+            for (frames[0 .. count + 1], 0..) |*frame, i| {
+                if (i >= workers) try testing.expectError(error.OperationCanceled, frame.getResult());
+                try OwnedJob.consume(i, &calls[i], frame.getResult());
+                try testing.expectEqual(@as(usize, if (i < workers) 1 else 0), calls[i].load(.acquire));
+                try testing.expectEqual(0, frame.task.outstanding_io);
+                frame.coroutine.deinit();
+            }
+            try testing.expectEqual(0, pool.outstanding);
+            try testing.expect(!loop.control.hasWork());
+            try testing.expectEqual(null, loop.control.registrations.first);
+            try testing.expectEqual(null, loop.executor.all_tasks.first);
+            try support.drained(&loop);
         }
     }
 }
