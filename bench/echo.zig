@@ -3,13 +3,14 @@ const builtin = @import("builtin");
 const velo = @import("velo");
 const co = velo.coroutines;
 const io = velo.event;
+const net = velo.net;
 
 const Echo = struct {
-    stream: io.Stream,
+    stream: net.Stream,
     buffer: [4096]u8 = undefined,
 
     pub const Result = anyerror!void;
-    pub const State = union(enum) { recv: io.Recv, send: io.SendAll };
+    pub const State = union(enum) { recv: io.Recv, send: net.SendAll };
     const Next = co.Next(@This());
 
     pub fn start(self: *Echo) Next {
@@ -22,7 +23,7 @@ const Echo = struct {
         return .{ .go = .{ .send = self.stream.sendAll(self.buffer[0..n]) } };
     }
 
-    pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) Next {
+    pub fn send(self: *Echo, result: co.ResultOf(net.SendAll)) Next {
         result catch |err| return self.done(err);
         return self.start();
     }
@@ -34,7 +35,7 @@ const Echo = struct {
 };
 
 const Acceptor = struct {
-    listener: *io.Listener,
+    listener: *net.Listener,
     frames: []co.Frame(co.Machine(Echo)),
     accepted: usize = 0,
 
@@ -48,7 +49,7 @@ const Acceptor = struct {
 
     pub fn accept(self: *Acceptor, result: io.Error!io.Socket) Next {
         const fd = result catch |err| return self.fail(err);
-        const stream = io.Stream.init(self.listener.loop, fd);
+        const stream = net.Stream.init(self.listener.loop, fd);
         const enabled: c_int = 1;
         if (std.os.linux.errno(std.os.linux.setsockopt(fd, std.os.linux.IPPROTO.TCP, std.os.linux.TCP.NODELAY, std.mem.asBytes(&enabled), @sizeOf(c_int))) != .SUCCESS) {
             stream.close();
@@ -76,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     const backend = std.meta.stringToEnum(io.Loop.Backend, args[2]) orelse return error.InvalidBackend;
     var loop = try io.Loop.initWithBackend(.{ .entries = 256 }, backend);
     defer loop.deinit();
-    var listener = try io.Listener.init(&loop, try .parseLiteral("127.0.0.1:0"), .{ .backlog = 1024 });
+    var listener = try net.Listener.init(&loop, try .parseLiteral("127.0.0.1:0"), .{ .backlog = 1024 });
     defer listener.deinit();
     const frames = try init.gpa.alloc(co.Frame(co.Machine(Echo)), count);
     defer init.gpa.free(frames);

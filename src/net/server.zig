@@ -1,7 +1,7 @@
 //! `Server(connect)`: a TCP server coroutine over a listener, an acceptor `Machine` and a
 //! `Scope` of connections in caller-owned slots.
 //!
-//! `connect: fn (Context, io.Stream) Handler` builds each connection's coroutine, which
+//! `connect: fn (Context, net.Stream) Handler` builds each connection's coroutine, which
 //! returns `void` or `E!void`. The server closes the stream after its handler finishes;
 //! handlers must not close it. Handler errors end only that connection and are counted.
 //! A slot is reserved before each accept, so a full server stops accepting instead of
@@ -11,17 +11,18 @@
 //! Pin the server and slots from spawn until ready is consumed; `deinit` afterwards.
 
 const std = @import("std");
-const io = @import("root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
+const net = @import("root.zig");
 
 pub fn Server(comptime connect: anytype) type {
-    const signature = "Server needs `fn (Context, io.Stream) Handler`, found " ++ @typeName(@TypeOf(connect));
+    const signature = "Server needs `fn (Context, net.Stream) Handler`, found " ++ @typeName(@TypeOf(connect));
     const info = switch (@typeInfo(@TypeOf(connect))) {
         .@"fn" => |info| info,
         else => @compileError(signature),
     };
     if (info.param_types.len != 2 or info.param_types[0] == null or
-        info.param_types[1] != io.Stream or info.return_type == null)
+        info.param_types[1] != net.Stream or info.return_type == null)
         @compileError(signature);
 
     const Context = info.param_types[0].?;
@@ -37,7 +38,7 @@ pub fn Server(comptime connect: anytype) type {
 
     return struct {
         loop: *io.Loop,
-        listener: io.Listener,
+        listener: net.Listener,
         context: Context,
         connections: Connections,
         acceptor: co.Machine(Acceptor),
@@ -50,7 +51,7 @@ pub fn Server(comptime connect: anytype) type {
         pub const Slot = Connections.Slot;
         pub const Result = io.Error!void;
 
-        pub const Options = io.Listener.Options;
+        pub const Options = net.Listener.Options;
 
         pub const Stats = struct {
             accepted: usize = 0,
@@ -62,7 +63,7 @@ pub fn Server(comptime connect: anytype) type {
 
         const Connection = struct {
             handler: Handler,
-            stream: io.Stream,
+            stream: net.Stream,
             server: *Self,
 
             pub fn poll(self: *Connection, task: *co.Task) co.Poll(void) {
@@ -140,7 +141,7 @@ pub fn Server(comptime connect: anytype) type {
                 self.backoff_ms = 0;
                 server.stats.accepted += 1;
 
-                const stream: io.Stream = .init(server.loop, fd);
+                const stream: net.Stream = .init(server.loop, fd);
                 server.connections.start(slot, .{
                     .handler = connect(server.context, stream),
                     .stream = stream,
@@ -172,7 +173,7 @@ pub fn Server(comptime connect: anytype) type {
 
         /// Binds and listens; `listener.address` reports the bound port.
         /// At least one slot is required; empty storage returns InvalidArgument.
-        pub fn init(loop: *io.Loop, address: io.Address, context: Context, slots: []Slot, options: Options) io.Error!Self {
+        pub fn init(loop: *io.Loop, address: net.Address, context: Context, slots: []Slot, options: Options) io.Error!Self {
             if (slots.len == 0) return error.InvalidArgument;
             return .{
                 .loop = loop,

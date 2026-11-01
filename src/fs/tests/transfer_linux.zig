@@ -1,10 +1,12 @@
 const std = @import("std");
 const linux = std.os.linux;
-const io = @import("../root.zig");
+const io = @import("../../event/root.zig");
 const co = @import("../../coroutines/root.zig");
+const fs = @import("../root.zig");
+const net = @import("../../net/root.zig");
 const Pool = @import("../../workers/Pool.zig");
 const native = @import("../transfer_linux.zig");
-const support = @import("support.zig");
+const support = @import("../../event/tests/support.zig");
 const testing = std.testing;
 
 test "transfer Linux kernel copy paths move data without buffered fallback" {
@@ -33,7 +35,7 @@ test "transfer Linux kernel copy paths move data without buffered fallback" {
     const sent = try native.copy(.{ .file = .{ .file = input } }, .{ .stream = .init(&loop, pair[0]) }, &scratch);
     try testing.expectEqual(data.len, sent.written);
     try testing.expect(!sent.fallback);
-    var receive: co.Frame(io.ReadExact) = .init(.init(&loop, .{
+    var receive: co.Frame(net.ReadExact) = .init(.init(&loop, .{
         .fd = pair[1],
         .buffer = &got,
         .deadline = try io.deadlineIn(io.seconds(5)),
@@ -41,7 +43,7 @@ test "transfer Linux kernel copy paths move data without buffered fallback" {
     try loop.block(&receive);
     try testing.expectEqualStrings(data, &got);
 
-    var send: co.Frame(io.SendAll) = .init(.init(&loop, .{ .fd = pair[0], .buffer = data }));
+    var send: co.Frame(net.SendAll) = .init(.init(&loop, .{ .fd = pair[0], .buffer = data }));
     try loop.block(&send);
     const spliced = try native.copy(.{ .stream = .init(&loop, pair[1]) }, .{ .file = .{ .file = output, .offset = data.len } }, &scratch);
     try testing.expectEqual(data.len, spliced.written);
@@ -66,11 +68,11 @@ test "transfer Linux broken outputs preserve spliced input and do not deliver SI
     try native.nonblocking(source[1]);
     try native.nonblocking(destination[0]);
     try io.shutdownSocket(destination[0], .write);
-    var send: co.Frame(io.SendAll) = .init(.init(&loop, .{ .fd = source[0], .buffer = data }));
+    var send: co.Frame(net.SendAll) = .init(.init(&loop, .{ .fd = source[0], .buffer = data }));
     try loop.block(&send);
 
     const Child = struct {
-        fn check(file: std.Io.File, incoming: io.Stream, outgoing: io.Stream) !void {
+        fn check(file: std.Io.File, incoming: net.Stream, outgoing: net.Stream) !void {
             const action: linux.Sigaction = .{ .handler = .{ .handler = linux.SIG.DFL }, .mask = linux.sigemptyset(), .flags = 0 };
             if (linux.errno(linux.sigaction(.PIPE, &action, null)) != .SUCCESS) return error.SignalSetup;
             var mask = linux.sigemptyset();
@@ -161,13 +163,13 @@ test "transfer Linux cross-filesystem fallback reads virtual files and rejects a
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var scratch: [71]u8 = undefined;
-    const options: io.Transfer.Options = .{
+    const options: fs.Transfer.Options = .{
         .source = .{ .file = .{ .file = input } },
         .destination = .{ .file = .{ .file = output } },
         .buffer = &scratch,
         .len = count,
     };
-    var frame: co.Frame(io.Transfer) = .init(.init(&pool, options));
+    var frame: co.Frame(fs.Transfer) = .init(.init(&pool, options));
     try testing.expectEqual(count, try loop.block(&frame));
     try testing.expect(!frame.coroutine.fast);
     var got: [512]u8 = undefined;
@@ -207,7 +209,7 @@ test "transfer Linux a completed native chunk wins cancellation and retains prog
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var scratch: [4]u8 = undefined;
-    var frame: co.Frame(io.Transfer) = .init(.init(&pool, .{
+    var frame: co.Frame(fs.Transfer) = .init(.init(&pool, .{
         .source = .{ .file = .{ .file = source } },
         .destination = .{ .file = .{ .file = destination } },
         .len = 4,

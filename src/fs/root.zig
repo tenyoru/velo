@@ -49,6 +49,7 @@ pub const Allocate = worker.Allocate;
 pub const ReadAt = Dispatch("ReadAt", "read", usize);
 pub const WriteAt = Dispatch("WriteAt", "write", usize);
 pub const Sync = Dispatch("Sync", "sync", void);
+pub const Transfer = @import("transfer.zig");
 
 fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime T: type) type {
     const Worker = @field(worker, name);
@@ -104,7 +105,11 @@ fn Dispatch(comptime name: []const u8, comptime capability: []const u8, comptime
 test {
     std.testing.refAllDecls(@This());
     _ = @import("tests/portable.zig");
-    if (builtin.os.tag == .linux) _ = @import("tests/linux.zig");
+    _ = @import("tests/transfer.zig");
+    if (builtin.os.tag == .linux) {
+        _ = @import("tests/linux.zig");
+        _ = @import("tests/transfer_linux.zig");
+    }
     if (builtin.os.tag == .windows) _ = @import("tests/windows.zig");
     if (builtin.os.tag == .macos) _ = @import("tests/macos.zig");
 }

@@ -2,6 +2,7 @@
 
 pub const coroutines = @import("coroutines/root.zig");
 pub const event = @import("event/root.zig");
+pub const net = @import("net/root.zig");
 pub const workers = @import("workers/root.zig");
 pub const fs = @import("fs/root.zig");
 

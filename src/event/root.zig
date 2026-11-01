@@ -59,18 +59,7 @@ pub const LoopOptions = struct {
 
 pub const Control = @import("Control.zig");
 pub const Mailbox = @import("Mailbox.zig").Mailbox;
-pub const SendAll = @import("stream.zig").SendAll;
-pub const ReadExact = @import("stream.zig").ReadExact;
-pub const Transfer = @import("transfer.zig");
 pub const WithTimeout = @import("timeout.zig").WithTimeout;
-
-const net = @import("net.zig");
-pub const Address = net.Address;
-pub const NativeAddress = net.NativeAddress;
-pub const Listener = net.Listener;
-pub const Stream = net.Stream;
-pub const Dial = net.Dial;
-pub const Server = @import("server.zig").Server;
 
 pub const Socket = if (builtin.os.tag == .windows) usize else std.c.fd_t;
 pub const SockAddr = switch (builtin.os.tag) {
@@ -95,7 +84,7 @@ pub fn seconds(s: u32) Timespec {
     return .{ .sec = s, .nsec = 0 };
 }
 
-/// Absolute deadline `duration` after `now()`, for operation and `Stream` deadlines.
+/// Absolute deadline `duration` after `now()`, for operation and `net.Stream` deadlines.
 pub fn deadlineIn(duration: Timespec) Error!Timespec {
     const start = try now();
     const nsec = start.nsec + duration.nsec;
@@ -148,13 +137,9 @@ test {
     if (builtin.os.tag == .linux) {
         _ = @import("tests/uring.zig");
         _ = @import("tests/iowq.zig");
-        _ = @import("tests/transfer_linux.zig");
     }
     _ = @import("tests/portable.zig");
     _ = @import("tests/lifecycle.zig");
     _ = @import("tests/runtime.zig");
     _ = @import("tests/mailbox.zig");
-    _ = @import("tests/net.zig");
-    _ = @import("tests/transfer.zig");
-    _ = @import("tests/server.zig");
 }

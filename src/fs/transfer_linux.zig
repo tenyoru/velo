@@ -4,7 +4,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const Transfer = @import("transfer.zig");
-const mapError = @import("../fs/native.zig").mapError;
+const mapError = @import("native.zig").mapError;
 const Endpoint = Transfer.Endpoint;
 const Progress = Transfer.Progress;
 

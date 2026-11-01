@@ -1,15 +1,16 @@
 const std = @import("std");
-const io = @import("../root.zig");
+const io = @import("../../event/root.zig");
 const co = @import("../../coroutines/root.zig");
-const support = @import("support.zig");
+const net = @import("../root.zig");
+const support = @import("../../event/tests/support.zig");
 const testing = std.testing;
 
 const Echo = struct {
-    stream: io.Stream,
+    stream: net.Stream,
     buffer: [16]u8 = undefined,
 
     pub const Result = anyerror!void;
-    pub const State = union(enum) { recv: io.Recv, send: io.SendAll };
+    pub const State = union(enum) { recv: io.Recv, send: net.SendAll };
     const Next = co.Next(@This());
 
     pub fn start(self: *Echo) Next {
@@ -24,19 +25,19 @@ const Echo = struct {
         return .{ .go = .{ .send = self.stream.sendAll(self.buffer[0..n]) } };
     }
 
-    pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) Next {
+    pub fn send(self: *Echo, result: co.ResultOf(net.SendAll)) Next {
         result catch |err| return .{ .done = err };
         return self.start();
     }
 };
 
-fn session(sessions: *usize, stream: io.Stream) co.Machine(Echo) {
+fn session(sessions: *usize, stream: net.Stream) co.Machine(Echo) {
     sessions.* += 1;
     return .init(.{ .stream = stream });
 }
 
-const App = io.Server(session);
-const Ping = co.Join(.{ .send = io.SendAll, .read = io.ReadExact });
+const App = net.Server(session);
+const Ping = co.Join(.{ .send = net.SendAll, .read = net.ReadExact });
 
 /// Client script shared by the tests: every step has a deadline, and finishing for any
 /// reason closes its streams and cancels the server so `block` cannot hang.
@@ -44,16 +45,16 @@ const Script = struct {
     loop: *io.Loop,
     server: *co.Frame(App),
     until: io.Timespec,
-    streams: [2]?io.Stream = @splat(null),
+    streams: [2]?net.Stream = @splat(null),
     byte: [1]u8 = undefined,
 
     const Self = @This();
 
-    fn dial(self: *Self) io.Dial {
+    fn dial(self: *Self) net.Dial {
         return .init(self.loop, self.server.coroutine.listener.address, .{ .deadline = self.until });
     }
 
-    fn connected(self: *Self, index: usize, result: io.Error!io.Stream) !io.Stream {
+    fn connected(self: *Self, index: usize, result: io.Error!net.Stream) !net.Stream {
         var stream = try result;
         stream.deadline = self.until;
         self.streams[index] = stream;
@@ -88,13 +89,13 @@ const Backpressure = struct {
 
     pub const Result = anyerror!void;
     pub const State = union(enum) {
-        dial_a: io.Dial,
-        dial_b: io.Dial,
+        dial_a: net.Dial,
+        dial_b: net.Dial,
         ping_a: Ping,
-        send_b: io.SendAll,
+        send_b: net.SendAll,
         idle_b: io.Recv,
-        read_b: io.ReadExact,
-        reject_b: io.SendAll,
+        read_b: net.ReadExact,
+        reject_b: net.SendAll,
         eof_b: io.Recv,
     };
     const Next = co.Next(@This());
@@ -107,12 +108,12 @@ const Backpressure = struct {
         return .{ .go = .{ .dial_a = self.script.dial() } };
     }
 
-    pub fn dial_a(self: *Backpressure, result: io.Error!io.Stream) Next {
+    pub fn dial_a(self: *Backpressure, result: io.Error!net.Stream) Next {
         _ = self.script.connected(0, result) catch |err| return self.fail(err);
         return .{ .go = .{ .dial_b = self.script.dial() } };
     }
 
-    pub fn dial_b(self: *Backpressure, result: io.Error!io.Stream) Next {
+    pub fn dial_b(self: *Backpressure, result: io.Error!net.Stream) Next {
         _ = self.script.connected(1, result) catch |err| return self.fail(err);
         return .{ .go = .{ .ping_a = self.script.ping(0, "a") } };
     }
@@ -122,7 +123,7 @@ const Backpressure = struct {
         return .{ .go = .{ .send_b = self.script.streams[1].?.sendAll("b") } };
     }
 
-    pub fn send_b(self: *Backpressure, result: co.ResultOf(io.SendAll)) Next {
+    pub fn send_b(self: *Backpressure, result: co.ResultOf(net.SendAll)) Next {
         result catch |err| return self.fail(err);
 
         // The only slot serves `a`, so `b` stays queued in the listen backlog.
@@ -140,14 +141,14 @@ const Backpressure = struct {
         return .{ .go = .{ .read_b = self.script.streams[1].?.readExact(&self.script.byte) } };
     }
 
-    pub fn read_b(self: *Backpressure, result: co.ResultOf(io.ReadExact)) Next {
+    pub fn read_b(self: *Backpressure, result: co.ResultOf(net.ReadExact)) Next {
         result catch |err| return self.fail(err);
         if (self.script.byte[0] != 'b') return self.fail(error.WrongEcho);
 
         return .{ .go = .{ .reject_b = self.script.streams[1].?.sendAll("!") } };
     }
 
-    pub fn reject_b(self: *Backpressure, result: co.ResultOf(io.SendAll)) Next {
+    pub fn reject_b(self: *Backpressure, result: co.ResultOf(net.SendAll)) Next {
         result catch |err| return self.fail(err);
         return .{ .go = .{ .eof_b = self.script.streams[1].?.recv(&self.script.byte) } };
     }
@@ -164,7 +165,7 @@ const CancelLive = struct {
     script: Script,
 
     pub const Result = anyerror!void;
-    pub const State = union(enum) { dial: io.Dial, ping: Ping, eof: io.Recv };
+    pub const State = union(enum) { dial: net.Dial, ping: Ping, eof: io.Recv };
     const Next = co.Next(@This());
 
     fn fail(self: *CancelLive, err: anyerror) Next {
@@ -175,7 +176,7 @@ const CancelLive = struct {
         return .{ .go = .{ .dial = self.script.dial() } };
     }
 
-    pub fn dial(self: *CancelLive, result: io.Error!io.Stream) Next {
+    pub fn dial(self: *CancelLive, result: io.Error!net.Stream) Next {
         _ = self.script.connected(0, result) catch |err| return self.fail(err);
         return .{ .go = .{ .ping = self.script.ping(0, "x") } };
     }
@@ -236,7 +237,7 @@ test "server rejects empty slots and cancellation before polling opens no sessio
         var loop = try support.initLoop(4, mode);
         defer loop.deinit();
         var sessions: usize = 0;
-        const address: io.Address = try .parseLiteral("127.0.0.1:0");
+        const address: net.Address = try .parseLiteral("127.0.0.1:0");
         try testing.expectError(error.InvalidArgument, App.init(&loop, address, &sessions, &.{}, .{}));
 
         var slots: [1]App.Slot = undefined;

@@ -1,10 +1,15 @@
-//! TCP conveniences over the socket helpers and operations: parsed addresses, listeners,
-//! streams with a shared deadline, and connects that own their socket until success.
+//! TCP conveniences over `velo.event` socket helpers and operations: parsed addresses,
+//! listeners, streams with a shared deadline, connects that own their socket until success,
+//! short-transfer loops, and `Server`.
 //! Initialize the loop first; close sockets after their operations and before loop deinit.
 
 const std = @import("std");
-const io = @import("root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
+
+pub const SendAll = @import("stream.zig").SendAll;
+pub const ReadExact = @import("stream.zig").ReadExact;
+pub const Server = @import("server.zig").Server;
 
 /// IPv4 or IPv6 address and port: `try .parseLiteral("127.0.0.1:8080")`, `"[::1]:8080"`;
 /// format with `{f}`.
@@ -127,11 +132,11 @@ pub const Stream = struct {
     }
 
     /// Fills the buffer or fails with EndOfStream.
-    pub fn readExact(self: Stream, buffer: []u8) io.ReadExact {
+    pub fn readExact(self: Stream, buffer: []u8) ReadExact {
         return .init(self.loop, .{ .fd = self.fd, .buffer = buffer, .deadline = self.deadline });
     }
 
-    pub fn sendAll(self: Stream, buffer: []const u8) io.SendAll {
+    pub fn sendAll(self: Stream, buffer: []const u8) SendAll {
         return .init(self.loop, .{ .fd = self.fd, .buffer = buffer, .deadline = self.deadline });
     }
 
@@ -187,3 +192,9 @@ pub const Dial = struct {
         if (self.fd != null) self.connect.cancel();
     }
 };
+
+test {
+    _ = @import("tests/tcp.zig");
+    _ = @import("tests/stream.zig");
+    _ = @import("tests/server.zig");
+}

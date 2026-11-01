@@ -74,7 +74,8 @@ I/O. Scale with independent loops, one per thread.
 - Close sockets after their operations finish; drain all work before loop deinit.
 
 API contracts live in doc comments: [coroutines](src/coroutines/root.zig),
-[I/O](src/event/root.zig), [workers](src/workers/root.zig), and [files](src/fs/root.zig).
+[I/O](src/event/root.zig), [networking](src/net/root.zig), [workers](src/workers/root.zig),
+and [files](src/fs/root.zig).
 See [Machine](src/coroutines/machine.zig) for sequential coroutines,
 [Mailbox](src/event/Mailbox.zig) for cross-loop messaging, and
 [NUMA](src/workers/numa/root.zig) for explicit placement.

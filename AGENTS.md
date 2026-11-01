@@ -91,17 +91,21 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/Mailbox.zig`: bounded typed MPSC mailbox; native mutex, FIFO Send/Recv,
   thread-safe trySend/close, post-drained cancellation, receiving-loop retention until
   close, shutdown registration and buffered-value cleanup with tryRecv
-- `src/event/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
-- `src/event/transfer.zig`, `transfer_linux.zig`: `Transfer` between distinct regular files
-  and streams; bounded worker kernel copies (copy_file_range/sendfile/splice), async buffered
-  fallback, explicit offsets, retained progress/unwritten input, worker-local SIGPIPE handling
-- `src/event/net.zig`: `Address` (std `IpAddress`), `NativeAddress`, `Listener`,
-  `Stream` with a shared deadline, `Dial` closing its socket unless connected
-- `src/event/server.zig`: `Server(connect)`: acceptor `Machine` (reserve, accept, backoff,
-  drain) over a `Scope` of connections; nonempty slots, server-owned stream close,
-  isolated handler errors and propagated backoff-timer errors
 - `src/event/timeout.zig`: `WithTimeout(C)`: lazy timer start, success beats expiry,
   error after expiry maps to `Timeout`
+
+- `src/net/root.zig`: `velo.net`; `Address` (std `IpAddress`), `NativeAddress`, `Listener`,
+  `Stream` with a shared deadline, `Dial` closing its socket unless connected; raw socket
+  operations and helpers stay in `velo.event`, which must not import this directory
+- `src/net/stream.zig`: `SendAll`/`ReadExact` short-transfer loops
+- `src/net/server.zig`: `Server(connect)`: acceptor `Machine` (reserve, accept, backoff,
+  drain) over a `Scope` of connections; nonempty slots, server-owned stream close,
+  isolated handler errors and propagated backoff-timer errors
+- `src/net/tests/tcp.zig`: address conversion, listener/dial/stream exchange,
+  refused and pre-canceled dials
+- `src/net/tests/stream.zig`: partial progress, EOF, half-close and canceled stream helpers
+- `src/net/tests/server.zig`: slot backpressure, handler errors, live/pre-poll
+  cancellation, empty-slot rejection and backoff errors; deadline-bounded client scripts
 
 - `src/workers/root.zig`: `velo.workers`; exports `Pool`, `Group`, and `numa`
 - `src/workers/Pool.zig`: fixed-size blocking pool, private jobs, generic `Work(C)`;
@@ -140,24 +144,23 @@ stackful fibers), so coroutines here are explicit state machines.
   positional transfers, data-only sync, and allocation; Darwin ABI definitions
 - `src/fs/windows.zig`: compatible file handles reopened for overlapped IOCP;
   worker transfers use private event-tagged OVERLAPPEDs, never Threaded APCs
+- `src/fs/transfer.zig`, `transfer_linux.zig`: `Transfer` between distinct regular files
+  and streams; bounded worker kernel copies (copy_file_range/sendfile/splice), async buffered
+  fallback, explicit offsets, retained progress/unwritten input, worker-local SIGPIPE handling;
+  `fs` imports `net` for `net.Stream`, never the reverse
 - `src/fs/tests/portable.zig`, `linux.zig`: portable contracts and Linux backend tests;
   `support.zig` shares frame completion and the positional roundtrip
 - `src/fs/tests/windows.zig`, `macos.zig`: native platform file tests;
   macOS native cases explicitly skip when the AIO-to-kqueue probe fails
+- `src/fs/tests/transfer.zig`, `transfer_linux.zig`: file/stream combinations, offsets,
+  native and buffered paths, EOF, failures, cancellation/deadlines, SIGPIPE and pipe recovery
 
 - `src/event/tests/support.zig`: shared socket setup, short-transfer echo, deadlines,
   loop driving, and drain checks
 - `src/event/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
 - `src/event/tests/portable.zig`: native socket/timer integration tests on all three OSes
 - `src/event/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
-- `src/event/tests/transfer.zig`, `transfer_linux.zig`: file/stream combinations, offsets,
-  native and buffered paths, EOF, failures, cancellation/deadlines, SIGPIPE and pipe recovery
-- `src/event/tests/net.zig`: address conversion, listener/dial/stream exchange,
-  refused and pre-canceled dials
-- `src/event/tests/server.zig`: slot backpressure, handler errors, live/pre-poll
-  cancellation, empty-slot rejection and backoff errors; deadline-bounded client scripts
-- `src/event/tests/runtime.zig`: cross-thread control, shutdown, datagram, and
-  stream-helper tests
+- `src/event/tests/runtime.zig`: cross-thread control, shutdown, and datagram tests
 - `src/event/tests/mailbox.zig`: bounded FIFO, ownership, delayed notifications,
   cancellation/shutdown and concurrent producer ordering
 
@@ -323,7 +326,7 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
 - **Darwin TCP** (checked 2026-10-24):
   [XNU tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/netinet/tcp_input.c):
   a bound, non-listening socket is `TCPS_CLOSED`; incoming packets are dropped without
-  a reset. `tests/net.zig` keeps the port bound to avoid reassignment races and expects
+  a reset. `tests/tcp.zig` keeps the port bound to avoid reassignment races and expects
   a Dial timeout on macOS versus connection refusal on Linux/Windows.
 - **Windows file I/O** (checked 2026-10-21):
   [ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile),

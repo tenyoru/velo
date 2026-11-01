@@ -2,14 +2,15 @@ const std = @import("std");
 const velo = @import("velo");
 const co = velo.coroutines;
 const io = velo.event;
+const net = velo.net;
 
 // One connection: echo until the peer closes. The server accepts, owns and closes the stream.
 const Echo = struct {
-    stream: io.Stream,
+    stream: net.Stream,
     buffer: [4096]u8 = undefined,
 
     pub const Result = anyerror!void;
-    pub const State = union(enum) { recv: io.Recv, send: io.SendAll };
+    pub const State = union(enum) { recv: io.Recv, send: net.SendAll };
     const Next = co.Next(@This());
 
     pub fn start(self: *Echo) Next {
@@ -23,7 +24,7 @@ const Echo = struct {
         return .{ .go = .{ .send = self.stream.sendAll(self.buffer[0..n]) } };
     }
 
-    pub fn send(self: *Echo, result: co.ResultOf(io.SendAll)) Next {
+    pub fn send(self: *Echo, result: co.ResultOf(net.SendAll)) Next {
         result catch |err| return finish(err);
         return self.start();
     }
@@ -34,11 +35,11 @@ const Echo = struct {
     }
 };
 
-fn connect(_: void, stream: io.Stream) co.Machine(Echo) {
+fn connect(_: void, stream: net.Stream) co.Machine(Echo) {
     return .init(.{ .stream = stream });
 }
 
-const Server = io.Server(connect);
+const Server = net.Server(connect);
 
 const Input = struct {
     pub fn run(_: *@This(), std_io: std.Io) !void {
@@ -103,14 +104,14 @@ pub fn main(init: std.process.Init) !void {
 test "echo server answers a client and drains on loop shutdown" {
     const Client = struct {
         loop: *io.Loop,
-        address: io.Address,
-        stream: ?io.Stream = null,
+        address: net.Address,
+        stream: ?net.Stream = null,
         reply: [5]u8 = undefined,
 
         pub const Result = anyerror!void;
         pub const State = union(enum) {
-            dial: io.Dial,
-            ping: co.Join(.{ .send = io.SendAll, .read = io.ReadExact }),
+            dial: net.Dial,
+            ping: co.Join(.{ .send = net.SendAll, .read = net.ReadExact }),
         };
         const Next = co.Next(@This());
 
@@ -119,7 +120,7 @@ test "echo server answers a client and drains on loop shutdown" {
             return .{ .go = .{ .dial = .init(self.loop, self.address, .{ .deadline = until }) } };
         }
 
-        pub fn dial(self: *@This(), result: io.Error!io.Stream) Next {
+        pub fn dial(self: *@This(), result: io.Error!net.Stream) Next {
             self.stream = result catch |err| return self.done(err);
             self.stream.?.deadline = io.deadlineIn(io.seconds(5)) catch |err| return self.done(err);
             const stream = self.stream.?;
@@ -130,7 +131,7 @@ test "echo server answers a client and drains on loop shutdown" {
             }) } };
         }
 
-        pub fn ping(self: *@This(), result: co.ResultOf(co.Join(.{ .send = io.SendAll, .read = io.ReadExact }))) Next {
+        pub fn ping(self: *@This(), result: co.ResultOf(co.Join(.{ .send = net.SendAll, .read = net.ReadExact }))) Next {
             result.send catch |err| return self.done(err);
             result.read catch |err| return self.done(err);
 

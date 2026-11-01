@@ -21,16 +21,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const co = @import("../coroutines/root.zig");
-const fs = @import("../fs/root.zig");
+const fs = @import("root.zig");
 const Pool = @import("../workers/Pool.zig");
-const io = @import("root.zig");
+const io = @import("../event/root.zig");
+const net = @import("../net/root.zig");
 const linux = @import("transfer_linux.zig");
 const assert = std.debug.assert;
 const Transfer = @This();
 
 pub const Endpoint = union(enum) {
     file: struct { file: fs.File, offset: u64 = 0 },
-    stream: io.Stream,
+    stream: net.Stream,
 };
 
 pub const Options = struct {
@@ -66,7 +67,7 @@ const Child = union {
     write_stream: io.Send,
 };
 
-/// `co.Frame(io.Transfer).init(.init(&pool, .{ .source = .{ .file = .{ .file = file } },
+/// `co.Frame(fs.Transfer).init(.init(&pool, .{ .source = .{ .file = .{ .file = file } },
 /// .destination = .{ .stream = stream }, .len = size, .buffer = &scratch }))`.
 pub fn init(pool: *Pool, options: Options) Transfer {
     return .{

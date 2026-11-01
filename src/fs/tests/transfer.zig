@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const fs = @import("../../fs/root.zig");
-const io = @import("../root.zig");
+const fs = @import("../root.zig");
+const io = @import("../../event/root.zig");
 const co = @import("../../coroutines/root.zig");
+const net = @import("../../net/root.zig");
 const Pool = @import("../../workers/Pool.zig");
-const support = @import("support.zig");
+const support = @import("../../event/tests/support.zig");
 const testing = std.testing;
 
 test "transfer file and stream combinations preserve bytes, offsets and progress" {
@@ -41,14 +42,14 @@ test "transfer file and stream combinations preserve bytes, offsets and progress
 
                     const until = try io.deadlineIn(io.seconds(10));
                     var scratch: [8192]u8 = undefined;
-                    var transfer: io.Transfer = .init(&pool, .{
+                    var transfer: fs.Transfer = .init(&pool, .{
                         .source = if (source_stream) .{ .stream = .init(&loop, input[1]) } else .{ .file = .{ .file = source, .offset = 6 } },
                         .destination = if (destination_stream) .{ .stream = .init(&loop, output[0]) } else .{ .file = .{ .file = destination, .offset = 3 } },
                         .len = data.len,
                         .buffer = &scratch,
                     });
                     if (buffered) transfer.fast = false;
-                    const Work = co.Join(.{ .transfer = io.WithTimeout(io.Transfer), .send = io.SendAll, .recv = io.ReadExact });
+                    const Work = co.Join(.{ .transfer = io.WithTimeout(fs.Transfer), .send = net.SendAll, .recv = net.ReadExact });
                     var work: co.Frame(Work) = .init(.init(.{
                         .transfer = .init(&loop, transfer, .{ .duration = io.seconds(10) }),
                         .send = .init(&loop, .{ .fd = input[0], .buffer = if (source_stream) data else "", .deadline = until }),
@@ -119,13 +120,13 @@ test "transfer validates ranges and scratch, preserves empty requests, and stops
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var scratch: [2]u8 = undefined;
-    const options: io.Transfer.Options = .{
+    const options: fs.Transfer.Options = .{
         .source = .{ .file = .{ .file = source } },
         .destination = .{ .file = .{ .file = destination } },
         .buffer = &scratch,
         .len = 10,
     };
-    var eof: co.Frame(io.Transfer) = .init(.init(&pool, options));
+    var eof: co.Frame(fs.Transfer) = .init(.init(&pool, options));
     try testing.expectEqual(3, try loop.block(&eof));
     try testing.expectEqual(3, eof.coroutine.read);
     var contents: [4]u8 = undefined;
@@ -135,7 +136,7 @@ test "transfer validates ranges and scratch, preserves empty requests, and stops
     var empty_options = options;
     empty_options.len = 0;
     empty_options.buffer = &.{};
-    var empty: co.Frame(io.Transfer) = .init(.init(&pool, empty_options));
+    var empty: co.Frame(fs.Transfer) = .init(.init(&pool, empty_options));
     try testing.expectEqual(0, try loop.block(&empty));
     var other = try io.Loop.init(.{});
     defer other.deinit();
@@ -149,11 +150,11 @@ test "transfer validates ranges and scratch, preserves empty requests, and stops
             4 => invalid.source = .{ .stream = .init(&other, 0) },
             else => unreachable,
         }
-        var frame: co.Frame(io.Transfer) = .init(.init(&pool, invalid));
+        var frame: co.Frame(fs.Transfer) = .init(.init(&pool, invalid));
         try testing.expectError(error.InvalidArgument, loop.block(&frame));
         try testing.expectEqual(0, frame.coroutine.read);
     }
-    var canceled: co.Frame(io.Transfer) = .init(.init(&pool, options));
+    var canceled: co.Frame(fs.Transfer) = .init(.init(&pool, options));
     canceled.cancel();
     try testing.expectError(error.OperationCanceled, loop.block(&canceled));
     try testing.expectEqual(0, canceled.coroutine.read);
@@ -184,7 +185,7 @@ test "transfer fallback uses native-compatible file wrappers on associated handl
     try testing.expectEqual(1, try loop.block(&seed));
 
     var scratch: [3]u8 = undefined;
-    var copy: co.Frame(io.Transfer) = .init(.init(&pool, .{
+    var copy: co.Frame(fs.Transfer) = .init(.init(&pool, .{
         .source = .{ .file = .{ .file = source } },
         .destination = .{ .file = .{ .file = destination } },
         .buffer = &scratch,
@@ -223,7 +224,7 @@ test "transfer cancellation preserves a claimed read without writing or losing b
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var scratch: [16]u8 = undefined;
-    var frame: co.Frame(io.Transfer) = .init(.init(&pool, .{
+    var frame: co.Frame(fs.Transfer) = .init(.init(&pool, .{
         .source = .{ .file = .{ .file = source } },
         .destination = .{ .file = .{ .file = destination } },
         .len = 7,
@@ -263,7 +264,7 @@ test "transfer failed writes preserve consumed input" {
     try pool.init(testing.allocator, &loop, 1);
     defer pool.deinit();
     var scratch: [5]u8 = undefined;
-    var copy: co.Frame(io.Transfer) = .init(.init(&pool, .{
+    var copy: co.Frame(fs.Transfer) = .init(.init(&pool, .{
         .source = .{ .file = .{ .file = source } },
         .destination = .{ .file = .{ .file = read_only } },
         .buffer = &scratch,
@@ -290,11 +291,11 @@ test "transfer stream EOF returns a short count without closing either endpoint"
             defer pool.deinit();
             const pair = try support.pair(&loop, .ipv4);
             defer for (pair) |fd| support.close(fd);
-            var send: co.Frame(io.SendAll) = .init(.init(&loop, .{ .fd = pair[0], .buffer = "eof" }));
+            var send: co.Frame(net.SendAll) = .init(.init(&loop, .{ .fd = pair[0], .buffer = "eof" }));
             try loop.block(&send);
             try io.shutdownSocket(pair[0], .write);
             var scratch: [10]u8 = undefined;
-            var copy: co.Frame(io.Transfer) = .init(.init(&pool, .{
+            var copy: co.Frame(fs.Transfer) = .init(.init(&pool, .{
                 .source = .{ .stream = .init(&loop, pair[1]) },
                 .destination = .{ .stream = .init(&loop, pair[1]) },
                 .buffer = &scratch,
@@ -303,7 +304,7 @@ test "transfer stream EOF returns a short count without closing either endpoint"
             if (buffered) copy.coroutine.fast = false;
             try testing.expectEqual(3, try loop.block(&copy));
             var reply: [3]u8 = undefined;
-            var recv: co.Frame(io.ReadExact) = .init(.init(&loop, .{
+            var recv: co.Frame(net.ReadExact) = .init(.init(&loop, .{
                 .fd = pair[0],
                 .buffer = &reply,
                 .deadline = try io.deadlineIn(io.seconds(5)),
@@ -325,17 +326,17 @@ test "transfer stream deadlines and timeout cancellation drain idle reads" {
             defer pool.deinit();
             const pair = try support.pair(&loop, .ipv4);
             defer for (pair) |fd| support.close(fd);
-            var input: io.Stream = .init(&loop, pair[0]);
+            var input: net.Stream = .init(&loop, pair[0]);
             if (deadline) input.deadline = try io.deadlineIn(io.milliseconds(10));
             var scratch: [16]u8 = undefined;
-            const copy: io.Transfer = .init(&pool, .{
+            const copy: fs.Transfer = .init(&pool, .{
                 .source = .{ .stream = input },
                 .destination = .{ .stream = .init(&loop, pair[0]) },
                 .len = 1,
                 .buffer = &scratch,
             });
             if (deadline) try testing.expect(!copy.fast);
-            var frame: co.Frame(io.WithTimeout(io.Transfer)) = .init(.init(&loop, copy, .{
+            var frame: co.Frame(io.WithTimeout(fs.Transfer)) = .init(.init(&loop, copy, .{
                 .duration = if (deadline) io.seconds(5) else io.milliseconds(10),
             }));
             try testing.expectError(error.Timeout, loop.block(&frame));

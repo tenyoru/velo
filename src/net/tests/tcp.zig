@@ -1,14 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const io = @import("../root.zig");
+const io = @import("../../event/root.zig");
 const co = @import("../../coroutines/root.zig");
-const support = @import("support.zig");
+const net = @import("../root.zig");
+const support = @import("../../event/tests/support.zig");
 const testing = std.testing;
 
 test "net native addresses round-trip and format IPv4 and IPv6 literals" {
     for ([_][]const u8{ "127.0.0.1:8080", "[::1]:9", "[fe80::1]:443" }) |text| {
-        const address: io.Address = try .parseLiteral(text);
-        const native: io.NativeAddress = .init(address);
+        const address: net.Address = try .parseLiteral(text);
+        const native: net.NativeAddress = .init(address);
         var buffer: [64]u8 = undefined;
 
         try testing.expect(native.address().eql(&address));
@@ -33,12 +34,12 @@ test "net listener dial and stream exchange data, half-close and drain" {
             var loop = try support.initLoop(8, mode);
             defer loop.deinit();
 
-            var listener: io.Listener = try .init(&loop, try .parseLiteral(text), .{ .backlog = 4 });
+            var listener: net.Listener = try .init(&loop, try .parseLiteral(text), .{ .backlog = 4 });
             defer listener.deinit();
             try testing.expect(listener.address.getPort() != 0);
 
             const until = try io.deadlineIn(io.seconds(3));
-            var connect: co.Frame(co.Join(.{ .accept = io.Accept, .dial = io.Dial })) = .init(.init(.{
+            var connect: co.Frame(co.Join(.{ .accept = io.Accept, .dial = net.Dial })) = .init(.init(.{
                 .accept = listener.accept(.{ .deadline = until }),
                 .dial = .init(&loop, listener.address, .{ .deadline = until }),
             }));
@@ -47,14 +48,14 @@ test "net listener dial and stream exchange data, half-close and drain" {
             defer if (connected.accept) |fd| support.close(fd) else |_| {};
             defer if (connected.dial) |stream| stream.close() else |_| {};
 
-            var server: io.Stream = .init(&loop, try connected.accept);
+            var server: net.Stream = .init(&loop, try connected.accept);
             var client = try connected.dial;
 
             server.deadline = until;
             client.deadline = until;
 
             var reply: [5]u8 = undefined;
-            var exchange: co.Frame(co.Join(.{ .send = io.SendAll, .read = io.ReadExact })) = .init(.init(.{
+            var exchange: co.Frame(co.Join(.{ .send = net.SendAll, .read = net.ReadExact })) = .init(.init(.{
                 .send = client.sendAll("hello"),
                 .read = server.readExact(&reply),
             }));
@@ -80,7 +81,7 @@ test "net failed dial closes its socket and pre-canceled dial opens none" {
         // Keep the port bound but not listening, so another process cannot claim it.
         const fd = try io.tcpSocket(.ipv4);
         defer support.close(fd);
-        var native: io.NativeAddress = .init(try .parseLiteral("127.0.0.1:0"));
+        var native: net.NativeAddress = .init(try .parseLiteral("127.0.0.1:0"));
         var length = native.len();
         try io.bind(fd, native.ptr(), length);
         try io.localAddress(fd, native.ptr(), &length);
@@ -89,7 +90,7 @@ test "net failed dial closes its socket and pre-canceled dial opens none" {
         // XNU drops packets for a bound TCPS_CLOSED socket without sending a reset.
         // Linux and Windows refuse; Darwin exercises the same cleanup via a deadline.
         const darwin = builtin.os.tag == .macos;
-        var failed: co.Frame(io.Dial) = .init(.init(&loop, address, .{
+        var failed: co.Frame(net.Dial) = .init(.init(&loop, address, .{
             .deadline = try io.deadlineIn(if (darwin) io.milliseconds(100) else io.seconds(5)),
         }));
 
@@ -97,7 +98,7 @@ test "net failed dial closes its socket and pre-canceled dial opens none" {
         try testing.expect(failed.coroutine.fd != null);
         try testing.expectError(error.BadFileDescriptor, io.localAddress(failed.coroutine.fd.?, native.ptr(), &length));
 
-        var canceled: co.Frame(io.Dial) = .init(.init(&loop, address, .{}));
+        var canceled: co.Frame(net.Dial) = .init(.init(&loop, address, .{}));
 
         canceled.cancel();
         try testing.expectError(error.OperationCanceled, loop.block(&canceled));

@@ -1,7 +1,7 @@
 //! Stream transfers preserve partial progress in `offset` on error. Cancellation
 //! drains the active child before returning; referenced buffers must stay pinned.
 
-const io = @import("root.zig");
+const io = @import("../event/root.zig");
 const co = @import("../coroutines/root.zig");
 const ThreadGuard = @import("../ThreadGuard.zig");
 
