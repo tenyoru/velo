@@ -24,6 +24,7 @@
 !/bench/compare/
 !/bench/compare/*.py
 !/bench/compare/*.c
+!/bench/compare/*.go
 !/bench/compare/tokio/
 !/bench/compare/tokio/Cargo.*
 !/bench/compare/tokio/src/

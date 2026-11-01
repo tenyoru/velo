@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const bench_step = b.step("bench", "Build and install benchmarks");
-    inline for (.{ "scalability", "numa", "echo", "crossloop" }) |name| {
+    inline for (.{ "scalability", "numa", "echo", "crossloop", "coroutines" }) |name| {
         const benchmark_module = b.createModule(.{
             .root_source_file = b.path("bench/" ++ name ++ ".zig"),
             .target = target,
@@ -63,6 +63,8 @@ pub fn build(b: *std.Build) void {
         const benchmark = b.addExecutable(.{ .name = executable_name, .root_module = benchmark_module });
         const install_benchmark = b.addInstallArtifact(benchmark, .{});
         bench_step.dependOn(&install_benchmark.step);
+        if (comptime std.mem.eql(u8, name, "coroutines"))
+            b.step("bench-coroutines", "Build the coroutine comparison benchmark").dependOn(&install_benchmark.step);
         const run_benchmark = b.addRunArtifact(benchmark);
         run_benchmark.addPassthruArgs();
         b.step("run-" ++ executable_name, "Run the " ++ name ++ " benchmark").dependOn(&run_benchmark.step);

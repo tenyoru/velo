@@ -80,3 +80,78 @@ Server sources are `echo.zig`, `compare/libuv.c`, and
 than the server buffer, half-close, empty peers, measurement counts, corruption
 detection and startup/workload timeout cleanup. This suite compares complete echo programs;
 the existing timer/cancellation benchmark remains specific to velo.
+
+## Coroutine comparison (64-bit Linux)
+
+Velo, Tokio and Go run the same in-memory work, with no sockets or Python in
+that work's hot path. Use the pinned tools in `nix develop .#bench`:
+
+```sh
+just bench-coroutines-check
+just bench-coroutines --workload handoff --tasks 64 --iterations 100000 > handoff.jsonl
+just bench-coroutines --workload pipeline --tasks 4 --capacity 16 --work 16 --iterations 100000 > pipeline.jsonl
+just bench-coroutines --workload parked --tasks 10000 --active 16 --payload 64 > parked.jsonl
+```
+
+`--implementations velo tokio go` is the default; a subset builds only those
+implementations. `--cpu N` selects one allowed logical CPU (default: the lowest
+allowed). Affinity is applied **before exec**, inherited by runtime threads, and
+checked at the ready barrier. Velo uses a bare `Executor`, Tokio a current-thread
+runtime, Go `GOMAXPROCS=1`. Go can still create multiple OS threads. The runner
+sets `GOGC=100`, clears `GODEBUG`/`GOMEMLIMIT`/`GOFLAGS`, and records these choices;
+GC remains enabled and its CPU cost is included. It uses the Nix-provided Go
+compiler with `GOTOOLCHAIN=local` rather than downloading a compiler.
+
+| Workload | Contract | Primary measurements |
+|---|---|---|
+| `handoff` | `tasks` workers pass one u64 token around capacity-one channels for `iterations` laps; every receiver checks the token sequence. The final hop terminates without sending another token. | CPU ns/hop and hops/s; `operations = tasks * iterations` |
+| `pipeline` | `tasks` includes one producer, intermediate workers and one sink; `tasks - 1` bounded channels. Each intermediate worker applies `work` wrapping-u64 multiply/add steps per item. The sink checks every value in order. | CPU ns/item and items/s; `operations = iterations` |
+| `parked` | Each task waits on its own capacity-one channel with `payload` bytes of live data. Wake `active` evenly spaced tasks one at a time and await their completion; then wake/drain the remainder outside the measured interval. All payload checksums are checked. | Ready RSS, incremental RSS/task, sparse-wake time and remaining drain time |
+
+For `parked`, target `i` is `floor(i * tasks / active)`; keep `active` fixed when
+varying the parked population. The payload is a shared slab with a disjoint,
+initialized region per task, held live across suspension. `--payload 0` isolates
+more of the runtime/primitive overhead; it is not a measurement of the frame
+alone. Footprints include channels, completion handles, task storage, allocator
+retention and stacks. Report both total ready RSS and the delta from baseline;
+a delta can be negative after reclamation and small populations are dominated
+by fixed costs. Kernel memory is excluded. No forced collection is performed.
+
+A useful sweep is handoff tasks 2/64/1024, pipeline capacities 1/16/256 with
+work 0/16/256, and parked tasks 1000/10000/100000 with a fixed active subset.
+Use the same settings across implementations. Capacity zero is excluded because
+Tokio's bounded channel does not support rendezvous. Channels carry u64 values;
+these are idiomatic runtime workloads, not identical primitive implementations
+or a count of context switches. A token dependency does not guarantee one
+scheduler switch per hop. Tokio's cooperative budget and Go's scheduling remain
+at their normal settings.
+
+The native programs speak `baseline → ready → result` JSON Lines, with a newline
+from the runner releasing each of the first two barriers. The performance cases
+first run `--warmup` iterations (default 100) with disposable workers, then create
+fresh workers outside the measured interval. The parked case uses a fresh process
+without warmup (`iterations=1`, `warmup=0`). `setup_ns` includes allocation,
+initialization and reaching the initial waits; it is separate from `elapsed_ns`.
+Timed work includes activation, result checking and completion coordination.
+`drain_ns` is only the parked case's remaining wake-and-complete work, not memory
+reclamation or cancellation. Every process exits only after all workers finish.
+
+The runner checks each result against an independent checksum/count oracle,
+requires successful exit with no extra output, and kills/reaps children on timeout
+or protocol failure. The default is five fresh processes per implementation in
+seeded shuffled order. Metadata includes configuration, compiler versions,
+Git state, source/binary hashes and build commands. Each run includes native
+wall/process CPU time, baseline/ready/peak-at-ready RSS, thread count, and
+validation status; summaries retain median/min/max values. CPU uses the process
+clock in Zig/Rust and microsecond-resolution `getrusage` in Go. Samples shorter
+than 10 ms carry `short_sample: true`; increase iterations for throughput/CPU
+claims. Sparse wake timings are often short by design. No per-hop latency
+percentiles are claimed: clocking every handoff would distort it. These results
+exclude event-loop/backend costs and do not establish application/server speed.
+
+Sources: `coroutines.zig`, `compare/coroutines.go`,
+`compare/tokio/src/coroutines.rs`, runner `compare/coroutines.py` and integration
+checks `compare/test_coroutines.py`. `just bench-coroutines-check` covers all
+implementations, queue capacities, sparse/all wakes, checksums and runner failure
+cleanup. The Zig test also runs under ordinary `just test`; foreign targets
+compile it but skip the Linux-only execution test.

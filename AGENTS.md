@@ -178,6 +178,11 @@ stackful fibers), so coroutines here are explicit state machines.
   separately measured setup/warmup, CPU/residency/THP observation; included in test/check
 - `bench/crossloop.zig`: cross-loop ping-pong, busy receiver and paced traffic over
   `workers.Group`; CPU per message, latency percentiles and `Loop.stats`
+- `bench/coroutines.zig`: Linux in-memory handoff, bounded pipeline and parked-task
+  workloads; native timing and baseline/ready barriers for the Go/Tokio comparison
+- `bench/compare/coroutines.py`, `coroutines.go`, `tokio/src/coroutines.rs`: single-CPU
+  coroutine comparison with checksums, RSS snapshots and shuffled runs;
+  `test_coroutines.py` covers equivalent workloads and runner failure cleanup
 - `bench/echo.zig`: finite Linux TCP echo server (`echo-velo`), explicit backend,
   concurrent accepts/clients, EOF drain; built by bench/check
 - `bench/compare/`: shared Python runner/tests, C/libuv and pinned Rust/Tokio servers;
@@ -252,6 +257,12 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/index.html) and
   [JoinSet](https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html): current-thread
   execution and awaiting every connection before server exit.
+- **Coroutine benchmarks** (checked 2026-11-01):
+  [Go runtime](https://pkg.go.dev/runtime) for GOMAXPROCS and GC controls;
+  [Go channels](https://go.dev/ref/spec#Channel_types) and
+  [Tokio bounded channels](https://docs.rs/tokio/latest/tokio/sync/mpsc/fn.channel.html)
+  for FIFO/backpressure; Tokio capacity must be positive. Compare equal useful work,
+  include GC cost, and establish process affinity before runtime threads are created.
 - **Seastar** (C++, Apache-2.0, inspected `b3d32700b1afa27a882be44fd869dcca015d536f`):
   [repo](https://github.com/scylladb/seastar),
   [`tutorial.md`](https://github.com/scylladb/seastar/blob/master/doc/tutorial.md),

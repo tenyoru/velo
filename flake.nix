@@ -24,7 +24,7 @@
         inherit default;
         bench = pkgs.mkShell {
           inputsFrom = [ default ];
-          packages = with pkgs; [ cargo rustc rustfmt libuv pkg-config python3 ];
+          packages = with pkgs; [ cargo rustc rustfmt libuv pkg-config python3 go util-linux ];
         };
       };
     };

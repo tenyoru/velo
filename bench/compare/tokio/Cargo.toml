@@ -5,8 +5,12 @@ edition = "2021"
 publish = false
 
 [dependencies]
-tokio = { version = "=1.54.1", features = ["rt", "net", "io-util"] }
+tokio = { version = "=1.54.1", features = ["rt", "net", "io-util", "sync"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[[bin]]
+name = "coroutines-tokio"
+path = "src/coroutines.rs"

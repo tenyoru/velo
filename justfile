@@ -18,3 +18,9 @@ bench-compare *args:
 
 bench-check:
     python3 bench/compare/test.py
+
+bench-coroutines *args:
+    python3 bench/compare/coroutines.py {{args}}
+
+bench-coroutines-check:
+    python3 bench/compare/test_coroutines.py
