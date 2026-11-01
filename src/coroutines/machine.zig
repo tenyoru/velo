@@ -57,14 +57,14 @@ pub fn Machine(comptime Ctx: type) type {
             }
 
             while (true) {
-                const next = switch (self.tag.?) {
-                    inline else => |tag| next: {
+                // Applying inside each prong lets the compiler eliminate temporary state copies.
+                switch (self.tag.?) {
+                    inline else => |tag| {
                         const result = self.active(tag).poll(task).value() orelse return .pending;
-                        break :next @field(Ctx, @tagName(tag))(&self.ctx, result);
+                        const next = @field(Ctx, @tagName(tag))(&self.ctx, result);
+                        if (self.apply(next)) |done| return .{ .ready = done };
                     },
-                };
-
-                if (self.apply(next)) |result| return .{ .ready = result };
+                }
             }
         }
 
