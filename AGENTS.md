@@ -32,6 +32,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `nix develop .#bench -c just bench-balance [--cores 1 2 4]`: CPU query placement with balanced/skewed owners and explicit compute distribution; `bench-balance-check` validates the runner
 - `zig build run-scalability -- <auto|uring|epoll> <workload> <count> [steps]`: phase-separated benchmark
 - `zig build run-crossloop -Doptimize=ReleaseFast -- <auto|uring|epoll> <ping-pong|busy|paced> <messages> [loops=N] [rate=N] [work=N] [spin=NS] [pinned]`: cross-loop post cost, CPU and latency
+- `zig build run-matches -Doptimize=ReleaseFast -- <auto|uring|epoll> <round-robin|least-loaded> [loops=N] [clients=N] [ms=N] [rate=N] [work=N] [count=N] [seed=N] [grain=fixed|quota|tick] [pinned]`: game matches pinned to server loops; missed ticks by placement
 - `zig build run-numa -Doptimize=ReleaseFast -- <unpinned|pinned|local|remote> [threads] [MiB-per-thread] [iterations] [lazy|prefault|huge]`: Linux memory-locality benchmark
 - `zig build run-shards -- 4 10000 auto numa`: Linux placed shards with per-loop registered buffers
 - `zig test --dep velo -Mroot=examples/threadguard.zig -Mvelo=src/root.zig`: must panic
@@ -186,6 +187,9 @@ stackful fibers), so coroutines here are explicit state machines.
   `workers.Group`; CPU per message, latency percentiles and `Loop.stats`
 - `bench/coroutines.zig`: Linux in-memory handoff, bounded pipeline and parked-task
   workloads; native timing and baseline/ready barriers for the Go/Tokio comparison
+- `bench/matches.zig`: Linux game-server matches over loopback UDP, the stage 6 gate; uneven
+  sizes, unannounced fights, round-robin vs least-loaded placement at creation; tick lateness,
+  missed ticks, input-to-snapshot latency and per-loop CPU; included in test/check
 - `bench/balance.zig`, `bench/compare/balance.py`: Linux multi-loop CPU query placement;
   balanced/skewed ownership, local/spread computation, owner-only accumulators,
   per-loop CPU, batch completion times and shuffled physical-core sweeps
@@ -321,6 +325,7 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   [recvmmsg(2)](https://man7.org/linux/man-pages/man2/recvmmsg.2.html): per-message length
   and MSG_TRUNC flags. io_uring has no batch receive short of multishot with provided buffers,
   so `RecvBatch` waits for one datagram there and drains the rest with nonblocking recvmmsg.
+  One datagram per loop turn lost 8-34% of inputs in `bench/matches.zig` under long slices.
 - **Registered buffers:** [io_uring_register](https://man7.org/linux/man-pages/man2/io_uring_register.2.html):
   memlock accounting, containment and teardown. `Loop.Options.buffers` borrows at
   most 64 regions until deinit; `Uring.prepare` selects fixed opcodes transparently.

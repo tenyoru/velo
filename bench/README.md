@@ -204,3 +204,48 @@ The spread case measures the benefit and cost of deliberate compute placement; i
 does not add work stealing, rebalance running tasks, or automatically identify safe
 work to move. Seastar, Tokio and Go are not part of this experiment. Sources:
 `balance.zig`, `compare/balance.py`, `compare/test_balance.py`.
+
+## Game matches (64-bit Linux)
+
+```sh
+zig build bench -Doptimize=ReleaseFast
+zig-out/bin/matches uring round-robin work=12000 seed=1 pinned
+zig-out/bin/matches uring least-loaded work=12000 seed=1 pinned
+```
+
+This Velo-only experiment asks whether placing work once, when it arrives, keeps a
+sharded server on time, or whether one loop overloads while others idle: the gate for
+balancing running work. Unlike `balance`, the load is steady-state, does real I/O and
+cannot move: each match owns mutable state on the server loop it was placed on.
+
+A seeded schedule starts `count` matches at random times; each lasts 20-50% of the run
+and ends before it. Sizes are mostly small with a heavy tail: 70% have 2-8 players, 25%
+9-24 and 5% 32-64. Every tick, a match spends `work` dependent rounds per player, four
+times as many during a fight (two-second windows over about a quarter of each match),
+then sends each player a 256-byte snapshot. `grain` sets how that simulation shares its
+loop: `fixed` yields every 1024 rounds, close to preemptive sharing; `quota` yields once
+the loop's 500 us slice is spent, as velo asks of long polls; `tick` runs the whole tick in
+one poll, as simulation steps usually do, so other matches on that loop wait behind it.
+Clients on separate loops send 32-byte inputs
+at the same rate with their own phase. All traffic is loopback UDP, one socket per match
+per side; servers drain inputs with `RecvBatch`, 32 per operation. The placer sees player
+counts only, never lifetimes or fights:
+
+- `round-robin`: the match's index modulo the number of server loops.
+- `least-loaded`: the loop with the fewest players in matches still running.
+
+A tick whose start is more than one period late skips ahead; ran plus missed ticks equal
+the schedule, which the run checks along with packet accounting and owning threads. Report
+`missed_ratio`, tick lateness (scheduled to actual start), input-to-snapshot latency
+(newly acknowledged inputs only, so it includes up to one period of waiting for the next
+tick) and each loop's CPU over the run. Percentiles come from log-linear histograms with
+about 3% resolution. Each server loop also samples its thread CPU time in 100 ms windows:
+`peak_window_utilization` is the busiest window, and `missed_with_idle_peer` counts missed
+ticks recorded in a window where another server loop, sampled there, used under half its
+CPU. That is the balancing gate: misses with no idle peer are a capacity limit. A miss is
+recorded in the window where its late tick runs, so the delay can start one window earlier.
+`count` is capped at 1,000: each match holds about 63 KiB and two sockets, and least-loaded
+placement scans earlier matches. Pin loops with `pinned`; compare placements with the same `seed`,
+interleaved in one session. Epoll waits in whole milliseconds, so use io_uring for
+lateness. Loopback excludes physical-network effects; socket queues can still drop
+datagrams. Source: `matches.zig`.

@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const bench_step = b.step("bench", "Build and install benchmarks");
-    inline for (.{ "scalability", "numa", "echo", "crossloop", "coroutines", "balance" }) |name| {
+    inline for (.{ "scalability", "numa", "echo", "crossloop", "coroutines", "balance", "matches" }) |name| {
         const benchmark_module = b.createModule(.{
             .root_source_file = b.path("bench/" ++ name ++ ".zig"),
             .target = target,
