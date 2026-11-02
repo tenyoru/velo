@@ -127,7 +127,7 @@ pub fn closeSocket(fd: io.Socket) io.Error!void {
 
 fn socketOf(op: *io.Operation) usize {
     return switch (op.data) {
-        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
+        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .recvbatch, .close => |v| v.fd,
         .timeout, .read_at, .write_at, .sync => unreachable,
     };
 }
@@ -399,6 +399,25 @@ pub const Loop = struct {
                     null,
                 );
             },
+            // One datagram per operation: draining more synchronously would mix completions
+            // that skip the port into a socket whose operations always await their packet.
+            .recvbatch => |v| blk: {
+                const datagram = &v.datagrams[0];
+                op.native.buffer = .{ .buf = datagram.buffer.ptr, .len = @intCast(datagram.buffer.len) };
+                op.native.address_len = @sizeOf(io.AddressStorage);
+
+                break :blk w.WSARecvFrom(
+                    fd,
+                    @ptrCast(&op.native.buffer),
+                    1,
+                    null,
+                    &op.native.flags,
+                    &datagram.address.any,
+                    &op.native.address_len,
+                    &op.native.overlapped,
+                    null,
+                );
+            },
             .connect => return loop.connect(op),
             .accept => return loop.accept(op),
             else => unreachable,
@@ -408,7 +427,7 @@ pub const Loop = struct {
             const code: u32 = @bitCast(w.WSAGetLastError());
             // A truncated receive still queues its STATUS_BUFFER_OVERFLOW completion.
             if (code != w.IO_PENDING and
-                !((op.data == .recv or op.data == .recvfrom) and code == 10040))
+                !((op.data == .recv or op.data == .recvfrom or op.data == .recvbatch) and code == 10040))
                 loop.finish(op, code, 0);
         }
 
@@ -661,6 +680,19 @@ pub const Loop = struct {
                 code = 10022;
             } else {
                 op.data.recvfrom.address_len.* = @intCast(op.native.address_len);
+            }
+        }
+
+        if (op.data == .recvbatch and (code == 0 or code == 10040 or code == 234)) {
+            if (op.native.address_len < 0) {
+                code = 10022;
+            } else {
+                const datagram = &op.data.recvbatch.datagrams[0];
+                datagram.len = bytes;
+                datagram.truncated = code != 0;
+                datagram.address_len = @intCast(op.native.address_len);
+                code = 0;
+                bytes = 1;
             }
         }
 

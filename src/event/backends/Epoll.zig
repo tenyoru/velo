@@ -290,6 +290,7 @@ fn attempt(state: *State, op: *io.Operation) !void {
 
                 break :blk rc;
             },
+            .recvbatch => |v| @import("Uring.zig").receiveBatch(v.fd, v.datagrams),
             .close => |v| linux.close(v.fd),
             .timeout, .read_at, .write_at, .sync => unreachable,
         };
@@ -487,13 +488,13 @@ fn pollable(op: *const io.Operation) bool {
 
 fn socket(op: *const io.Operation) linux.fd_t {
     return switch (op.data) {
-        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
+        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .recvbatch, .close => |v| v.fd,
         .timeout, .read_at, .write_at, .sync => unreachable,
     };
 }
 
 fn direction(op: *const io.Operation) u32 {
-    return if (op.data == .recv or op.data == .recvfrom or op.data == .accept)
+    return if (op.data == .recv or op.data == .recvfrom or op.data == .recvbatch or op.data == .accept)
         linux.EPOLL.IN
     else
         linux.EPOLL.OUT;
@@ -712,6 +713,19 @@ test "epoll FIFO interest aggregation and cancellation remove idle write interes
     try std.testing.expectError(error.OperationCanceled, second.completion.?);
     try std.testing.expectEqual(0, state.live);
     try std.testing.expectEqual(@as(usize, 0), linux.epoll_wait(state.fd, &batch, batch.len, 0));
+}
+
+test "epoll batch receives wait for readable sockets" {
+    var buffer: [1]u8 = undefined;
+    var datagrams = [_]io.Datagram{.{ .buffer = &buffer }};
+    const op: io.Operation = .{
+        .loop = undefined,
+        .data = .{ .recvbatch = .{ .fd = 0, .datagrams = &datagrams } },
+        .linked = false,
+        .time = .{ .sec = 0, .nsec = 0 },
+    };
+
+    try std.testing.expectEqual(@as(u32, linux.EPOLL.IN), direction(&op));
 }
 
 test "epoll failed deregistration retains result and does not repeat receive" {

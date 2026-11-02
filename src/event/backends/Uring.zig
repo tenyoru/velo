@@ -111,6 +111,51 @@ pub fn datagram(op: *const io.Operation, message: *linux.msghdr, vector: *std.po
     return message;
 }
 
+/// Fills datagrams already queued on `fd`, without waiting, up to `io.max_batch`; returns
+/// the count or a negated errno like the syscall. Epoll receives whole batches this way.
+pub fn receiveBatch(fd: linux.fd_t, datagrams: []io.Datagram) usize {
+    const count = @min(datagrams.len, io.max_batch);
+    if (count == 0) return 0;
+
+    var headers: [io.max_batch]linux.mmsghdr = undefined;
+    var vectors: [io.max_batch]std.posix.iovec = undefined;
+    for (headers[0..count], vectors[0..count], datagrams[0..count]) |*header, *vector, *slot|
+        header.* = .{ .hdr = batchMessage(slot, vector), .len = 0 };
+
+    const rc = linux.recvmmsg(fd, &headers, @intCast(count), linux.MSG.DONTWAIT, null);
+    if (linux.errno(rc) != .SUCCESS) return rc;
+    for (headers[0..rc], datagrams[0..rc]) |header, *slot| record(slot, header.hdr, header.len);
+    return rc;
+}
+
+fn batchMessage(slot: *io.Datagram, vector: *std.posix.iovec) linux.msghdr {
+    vector.* = .{ .base = slot.buffer.ptr, .len = slot.buffer.len };
+    return .{
+        .name = &slot.address.any,
+        .namelen = @sizeOf(io.AddressStorage),
+        .iov = @ptrCast(vector),
+        .iovlen = 1,
+        .control = null,
+        .controllen = 0,
+        .flags = 0,
+    };
+}
+
+fn record(slot: *io.Datagram, message: linux.msghdr, len: usize) void {
+    slot.len = len;
+    slot.truncated = message.flags & linux.MSG.TRUNC != 0;
+    slot.address_len = message.namelen;
+}
+
+/// io_uring waited for the first datagram; the rest of the batch is what is already queued.
+/// Preserve received datagrams if draining stops on an error.
+fn drain(op: *io.Operation, first: i32) i32 {
+    const v = op.data.recvbatch;
+    record(&v.datagrams[0], op.native.uring.message, @intCast(first));
+    const more = receiveBatch(v.fd, v.datagrams[1..@min(v.datagrams.len, io.max_batch)]);
+    return 1 + if (linux.errno(more) == .SUCCESS) @as(i32, @intCast(more)) else 0;
+}
+
 pub fn bind(fd: io.Socket, address: *const io.SockAddr, len: io.SockLen) io.Error!void {
     const e = linux.errno(linux.bind(fd, address, len));
     if (e != .SUCCESS) return mapError(e);
@@ -147,6 +192,10 @@ pub fn prepare(op: *io.Operation, sqe: *linux.io_uring_sqe, timer: ?*linux.io_ur
         .recv => |v| sqe.prep_recv(v.fd, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], 0),
         .sendto => |v| sqe.prep_sendmsg(v.fd, @ptrCast(datagram(op, &native.message, &native.vector)), linux.MSG.NOSIGNAL),
         .recvfrom => |v| sqe.prep_recvmsg(v.fd, datagram(op, &native.message, &native.vector), 0),
+        .recvbatch => |v| {
+            native.message = batchMessage(&v.datagrams[0], &native.vector);
+            sqe.prep_recvmsg(v.fd, &native.message, 0);
+        },
         .close => |v| sqe.prep_close(v.fd),
         .timeout => unreachable,
         .read_at => |v| sqe.prep_read(v.file.handle, v.buffer[0..@min(v.buffer.len, std.math.maxInt(i32))], v.offset),
@@ -192,6 +241,7 @@ pub fn complete(op: *io.Operation, is_timer: bool, res: i32) void {
         op.primary = res;
         if (op.data == .recvfrom and res >= 0)
             op.data.recvfrom.address_len.* = op.native.uring.message.namelen;
+        if (op.data == .recvbatch and res >= 0) op.primary = drain(op, res);
     }
 
     finishIfReady(op);

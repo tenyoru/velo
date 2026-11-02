@@ -66,7 +66,9 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/root.zig`: `velo.event`; loop, network operations, timers, backend
   selection, and lifetime contract
 - `src/event/Operation.zig`: shared operation state, typed coroutine wrappers,
-  cancellation, and completion accounting
+  cancellation, and completion accounting; `RecvBatch` takes 1 to `max_batch` datagrams,
+  flagging truncation per datagram (io_uring waits for one, then drains with recvmmsg;
+  epoll uses recvmmsg; kqueue loops recvmsg; IOCP takes one)
 - `src/event/loop.zig`: `Shared(Loop, hooks)`: guarded `run` skeleton, slices of 64
   polls capped by a 500 us quota with an adaptive clock stride, `shouldYield`, safe-build
   stall reports, the `enterPark` wrapper around `park`, `deinit`,
@@ -160,7 +162,7 @@ stackful fibers), so coroutines here are explicit state machines.
 - `src/event/tests/uring.zig`: real-kernel timer, timeout, queue-pressure, and TCP echo tests
 - `src/event/tests/portable.zig`: native socket/timer integration tests on all three OSes
 - `src/event/tests/lifecycle.zig`: Accept/Recv/timer cancellation and real Join/Race tests
-- `src/event/tests/runtime.zig`: cross-thread control, shutdown, and datagram tests
+- `src/event/tests/runtime.zig`: cross-thread control, shutdown, datagram and datagram batch tests
 - `src/event/tests/mailbox.zig`: bounded FIFO, ownership, delayed notifications,
   cancellation/shutdown and concurrent producer ordering
 
@@ -315,6 +317,10 @@ Entries were checked on 2026-10-16 (Tokio, Go, and Ochi later).
   Recover pending pipe bytes before closing; zero-copy source data must stay unmodified
   until consumed by the receiver. sendfile/splice lack MSG_NOSIGNAL: block/consume only
   newly generated SIGPIPE on the worker, preserving its old mask and pending signal.
+- **Datagram batches** (checked 2026-11-02):
+  [recvmmsg(2)](https://man7.org/linux/man-pages/man2/recvmmsg.2.html): per-message length
+  and MSG_TRUNC flags. io_uring has no batch receive short of multishot with provided buffers,
+  so `RecvBatch` waits for one datagram there and drains the rest with nonblocking recvmmsg.
 - **Registered buffers:** [io_uring_register](https://man7.org/linux/man-pages/man2/io_uring_register.2.html):
   memlock accounting, containment and teardown. `Loop.Options.buffers` borrows at
   most 64 regions until deinit; `Uring.prepare` selects fixed opcodes transparently.

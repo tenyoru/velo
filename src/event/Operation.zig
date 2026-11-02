@@ -14,6 +14,7 @@ const Control = io.Control;
 const Socket = io.Socket;
 const SockAddr = io.SockAddr;
 const SockLen = io.SockLen;
+const Datagram = io.Datagram;
 const Timespec = io.Timespec;
 const NativeError = io.NativeError;
 const Error = io.Error;
@@ -33,7 +34,7 @@ cancel_requested: bool = false,
 native: backend.OperationState = .init,
 registration: Control.Registration = .{ .cancel = cancelRegistered },
 
-pub const Kind = enum { connect, accept, send, recv, sendto, recvfrom, close, timeout, read_at, write_at, sync };
+pub const Kind = enum { connect, accept, send, recv, sendto, recvfrom, recvbatch, close, timeout, read_at, write_at, sync };
 
 pub const Data = union(Kind) {
     connect: struct {
@@ -70,6 +71,12 @@ pub const Data = union(Kind) {
         address_len: *SockLen,
         deadline: ?Timespec = null,
     },
+    recvbatch: struct {
+        fd: Socket,
+        /// Filled from the front; the result counts them, at least one.
+        datagrams: []Datagram,
+        deadline: ?Timespec = null,
+    },
     close: struct {
         fd: Socket,
     },
@@ -95,7 +102,7 @@ pub const Data = union(Kind) {
 pub fn Coroutine(comptime kind: Kind) type {
     const T = switch (kind) {
         .accept => Socket,
-        .send, .recv, .sendto, .recvfrom, .read_at, .write_at => usize,
+        .send, .recv, .sendto, .recvfrom, .recvbatch, .read_at, .write_at => usize,
         .connect, .close, .timeout, .sync => void,
     };
 
@@ -106,7 +113,7 @@ pub fn Coroutine(comptime kind: Kind) type {
 
         pub fn init(loop: *Loop, options: @FieldType(Data, @tagName(kind))) Self {
             const deadline = switch (kind) {
-                .connect, .accept, .send, .recv, .sendto, .recvfrom => options.deadline,
+                .connect, .accept, .send, .recv, .sendto, .recvfrom, .recvbatch => options.deadline,
                 else => null,
             };
 
@@ -152,6 +159,18 @@ pub fn Coroutine(comptime kind: Kind) type {
                             op.completion = error.MessageTooBig;
 
                             return .{ .ready = error.MessageTooBig };
+                        }
+                    }
+
+                    if (comptime kind == .recvbatch) {
+                        const datagrams = op.data.recvbatch.datagrams;
+                        const failure: ?Error = if (datagrams.len == 0) error.InvalidArgument else for (datagrams[0..@min(datagrams.len, io.max_batch)]) |datagram| {
+                            if (datagram.buffer.len > std.math.maxInt(i32)) break error.MessageTooBig;
+                        } else null;
+                        if (failure) |err| {
+                            op.state = .done;
+                            op.completion = err;
+                            return .{ .ready = err };
                         }
                     }
 

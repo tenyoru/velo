@@ -15,6 +15,9 @@
 //! Recv returning zero means EOF; RecvFrom returning zero is an empty datagram.
 //! Streams may transfer short counts; oversized datagrams fail with MessageTooBig.
 //! A truncated datagram is consumed; peer outputs are unspecified on error.
+//! RecvBatch completes with 1 to `max_batch` datagrams and flags truncation per datagram
+//! instead of failing. It waits for the first datagram, never for a full batch.
+//! Linux and macOS add what is already queued; Windows takes one.
 //!
 //! Parked tasks alone do not keep run alive; retain the loop for external producers.
 //! Initialize the loop before socket helpers and close sockets before loop deinit.
@@ -68,6 +71,21 @@ pub const SockAddr = switch (builtin.os.tag) {
     else => std.c.sockaddr,
 };
 pub const SockLen = u32;
+/// Room for any sender address a datagram can carry.
+pub const AddressStorage = extern union { any: SockAddr, in: SockAddr.in, in6: SockAddr.in6 };
+
+/// One slot of a `RecvBatch`, borrowed with its buffer until ready is consumed.
+pub const Datagram = struct {
+    /// A longer datagram is cut to fit and consumed, with `truncated` set.
+    buffer: []u8,
+    len: usize = 0,
+    truncated: bool = false,
+    /// The first `address_len` bytes of `address` hold the sender.
+    address: AddressStorage = undefined,
+    address_len: SockLen = 0,
+};
+/// Most datagrams one `RecvBatch` fills; later slots stay untouched.
+pub const max_batch = 64;
 pub const Timespec = if (builtin.os.tag == .linux) linux.kernel_timespec else extern struct {
     sec: i64,
     nsec: i64,
@@ -130,6 +148,7 @@ pub const Send = Operation.Coroutine(.send);
 pub const Recv = Operation.Coroutine(.recv);
 pub const SendTo = Operation.Coroutine(.sendto);
 pub const RecvFrom = Operation.Coroutine(.recvfrom);
+pub const RecvBatch = Operation.Coroutine(.recvbatch);
 pub const Close = Operation.Coroutine(.close);
 pub const Timeout = Operation.Coroutine(.timeout);
 

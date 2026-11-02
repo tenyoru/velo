@@ -1058,6 +1058,177 @@ test "runtime pending datagram receive cancels and shutdown rejects new receives
     }
 }
 
+const Bound = struct { fd: io.Socket, address: io.AddressStorage, len: io.SockLen };
+
+fn bindLoopback(comptime family: io.AddressFamily) !Bound {
+    const fd = try io.udpSocket(family);
+    errdefer support.close(fd);
+    var bound: Bound = if (family == .ipv4) .{
+        .fd = fd,
+        .address = .{ .in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) } },
+        .len = @sizeOf(io.SockAddr.in),
+    } else .{
+        .fd = fd,
+        .address = .{ .in6 = .{
+            .port = 0,
+            .flowinfo = 0,
+            .addr = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            .scope_id = 0,
+        } },
+        .len = @sizeOf(io.SockAddr.in6),
+    };
+    try io.bind(fd, &bound.address.any, bound.len);
+    try io.localAddress(fd, &bound.address.any, &bound.len);
+    return bound;
+}
+
+fn sendDatagram(loop: *io.Loop, from: *const Bound, to: *const Bound, data: []const u8) !void {
+    var send: co.Frame(io.SendTo) = .init(.init(loop, .{
+        .fd = from.fd,
+        .buffer = data,
+        .address = &to.address.any,
+        .address_len = to.len,
+        .deadline = try support.deadline(3_000),
+    }));
+    loop.executor.spawn(&send.task);
+    support.run(loop);
+    try testing.expectEqual(data.len, try send.getResult());
+}
+
+fn receiveBatch(loop: *io.Loop, fd: io.Socket, datagrams: []io.Datagram) !usize {
+    var receive: co.Frame(io.RecvBatch) = .init(.init(loop, .{
+        .fd = fd,
+        .datagrams = datagrams,
+        .deadline = try support.deadline(3_000),
+    }));
+    loop.executor.spawn(&receive.task);
+    support.run(loop);
+    return receive.getResult();
+}
+
+test "runtime datagram batches drain queued packets and keep each sender" {
+    for (support.modes) |mode| {
+        inline for (.{ io.AddressFamily.ipv4, io.AddressFamily.ipv6 }) |family| {
+            var loop = try support.initLoop(8, mode);
+            defer loop.deinit();
+
+            const receiver = try bindLoopback(family);
+            defer support.close(receiver.fd);
+            const a = try bindLoopback(family);
+            defer support.close(a.fd);
+            const b = try bindLoopback(family);
+            defer support.close(b.fd);
+
+            const Packet = struct { data: []const u8, from: *const Bound };
+            const sent = [_]Packet{
+                .{ .data = "0", .from = &a },
+                .{ .data = "1", .from = &a },
+                .{ .data = "b", .from = &b },
+                .{ .data = "2", .from = &a },
+                .{ .data = "3", .from = &a },
+            };
+            for (sent) |packet| try sendDatagram(&loop, packet.from, &receiver, packet.data);
+
+            var buffers: [8][4]u8 = undefined;
+            var datagrams: [8]io.Datagram = undefined;
+            var received: usize = 0;
+            var batches: usize = 0;
+            while (received < sent.len) : (batches += 1) {
+                for (&datagrams, &buffers) |*datagram, *buffer| datagram.* = .{ .buffer = buffer };
+                const count = try receiveBatch(&loop, receiver.fd, &datagrams);
+                try testing.expect(count >= 1 and count <= sent.len - received);
+                for (datagrams[0..count], sent[received..][0..count]) |datagram, packet| {
+                    try testing.expectEqualStrings(packet.data, datagram.buffer[0..datagram.len]);
+                    try testing.expect(!datagram.truncated);
+                    try testing.expectEqual(packet.from.len, datagram.address_len);
+                    try testing.expectEqual(packet.from.address.any.family, datagram.address.any.family);
+                    try testing.expectEqual(packet.from.address.in.port, datagram.address.in.port);
+                }
+                received += count;
+            }
+            // Linux and macOS take what is already queued in one operation; Windows one each.
+            try testing.expectEqual(if (builtin.os.tag == .windows) sent.len else 1, batches);
+            try support.drained(&loop);
+        }
+    }
+}
+
+test "runtime datagram batches flag truncation, keep empty datagrams and stop at max_batch" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        const receiver = try bindLoopback(.ipv4);
+        defer support.close(receiver.fd);
+        const sender = try bindLoopback(.ipv4);
+        defer support.close(sender.fd);
+
+        for ([_][]const u8{ "hello", "", "hi" }) |data| try sendDatagram(&loop, &sender, &receiver, data);
+        var buffers: [3][4]u8 = undefined;
+        var datagrams: [3]io.Datagram = undefined;
+        for (&datagrams, &buffers) |*datagram, *buffer| datagram.* = .{ .buffer = buffer };
+        var received: usize = 0;
+        while (received < datagrams.len) received += try receiveBatch(&loop, receiver.fd, datagrams[received..]);
+        try testing.expect(datagrams[0].truncated);
+        try testing.expectEqualStrings("hell", datagrams[0].buffer[0..datagrams[0].len]);
+        try testing.expect(!datagrams[1].truncated);
+        try testing.expectEqual(0, datagrams[1].len);
+        try testing.expect(!datagrams[2].truncated);
+        try testing.expectEqualStrings("hi", datagrams[2].buffer[0..datagrams[2].len]);
+
+        const queued = io.max_batch + 6;
+        for (0..queued) |_| try sendDatagram(&loop, &sender, &receiver, "x");
+        var slots: [io.max_batch + 10][1]u8 = undefined;
+        var many: [io.max_batch + 10]io.Datagram = undefined;
+        for (&many, &slots) |*datagram, *buffer| datagram.* = .{ .buffer = buffer };
+        var total: usize = 0;
+        var first: ?usize = null;
+        while (total < queued) {
+            const count = try receiveBatch(&loop, receiver.fd, &many);
+            try testing.expect(count <= io.max_batch);
+            first = first orelse count;
+            total += count;
+        }
+        try testing.expectEqual(queued, total);
+        if (builtin.os.tag != .windows) try testing.expectEqual(io.max_batch, first.?);
+        try support.drained(&loop);
+    }
+}
+
+test "runtime datagram batches reject empty slots, time out and cancel unsubmitted" {
+    for (support.modes) |mode| {
+        var loop = try support.initLoop(8, mode);
+        defer loop.deinit();
+
+        const receiver = try bindLoopback(.ipv4);
+        defer support.close(receiver.fd);
+
+        var none: [0]io.Datagram = .{};
+        var empty: co.Frame(io.RecvBatch) = .init(.init(&loop, .{ .fd = receiver.fd, .datagrams = &none }));
+        loop.executor.spawn(&empty.task);
+        support.run(&loop);
+        try testing.expectError(error.InvalidArgument, empty.getResult());
+
+        var buffer: [4]u8 = undefined;
+        var datagrams = [_]io.Datagram{.{ .buffer = &buffer }};
+        var late: co.Frame(io.RecvBatch) = .init(.init(&loop, .{
+            .fd = receiver.fd,
+            .datagrams = &datagrams,
+            .deadline = try support.deadline(20),
+        }));
+        loop.executor.spawn(&late.task);
+        support.run(&loop);
+        try testing.expectError(error.Timeout, late.getResult());
+
+        var canceled: co.Frame(io.RecvBatch) = .init(.init(&loop, .{ .fd = receiver.fd, .datagrams = &datagrams }));
+        canceled.coroutine.cancel();
+        loop.executor.spawn(&canceled.task);
+        support.run(&loop);
+        try testing.expectError(error.OperationCanceled, canceled.getResult());
+        try support.drained(&loop);
+    }
+}
+
 test "runtime block drains other spawned work before returning the frame result" {
     for (support.modes) |mode| {
         var loop = try support.initLoop(8, mode);

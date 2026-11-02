@@ -19,6 +19,7 @@ test {
         event.Recv,
         event.SendTo,
         event.RecvFrom,
+        event.RecvBatch,
         event.Close,
         event.Timeout,
     }) |T| testing.refAllDecls(T);

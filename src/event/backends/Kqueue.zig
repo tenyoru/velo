@@ -407,6 +407,32 @@ pub const Loop = struct {
 
                     break :blk rc;
                 },
+                .recvbatch => |v| blk: {
+                    var count: usize = 0;
+                    for (v.datagrams[0..@min(v.datagrams.len, io.max_batch)]) |*datagram| {
+                        var vectors = [_]c.iovec{.{ .base = datagram.buffer.ptr, .len = datagram.buffer.len }};
+                        var message: c.msghdr = .{
+                            .name = &datagram.address.any,
+                            .namelen = @sizeOf(io.AddressStorage),
+                            .iov = &vectors,
+                            .iovlen = vectors.len,
+                            .control = null,
+                            .controllen = 0,
+                            .flags = 0,
+                        };
+                        const rc = c.recvmsg(v.fd, &message, 0);
+                        // Preserve received datagrams if draining stops on an error.
+                        if (rc < 0) {
+                            if (count == 0) break :blk rc;
+                            break;
+                        }
+                        datagram.len = @intCast(rc);
+                        datagram.truncated = message.flags & c.MSG.TRUNC != 0;
+                        datagram.address_len = @intCast(message.namelen);
+                        count += 1;
+                    }
+                    break :blk @intCast(count);
+                },
                 .accept => |v| blk: {
                     const fd = c.accept(v.fd, null, null);
                     if (fd < 0) break :blk fd;
@@ -604,13 +630,13 @@ fn fileOperation(op: *const io.Operation) bool {
 
 fn socket(op: *const io.Operation) c.fd_t {
     return switch (op.data) {
-        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .close => |v| v.fd,
+        inline .connect, .accept, .send, .recv, .sendto, .recvfrom, .recvbatch, .close => |v| v.fd,
         .timeout, .read_at, .write_at, .sync => unreachable,
     };
 }
 
 fn filter(op: *const io.Operation) i16 {
-    return if (op.data == .recv or op.data == .recvfrom or op.data == .accept)
+    return if (op.data == .recv or op.data == .recvfrom or op.data == .recvbatch or op.data == .accept)
         c.EVFILT.READ
     else
         c.EVFILT.WRITE;
